@@ -48,6 +48,25 @@ def host_fs_tree_root() -> str:
     return host_path_text(Path(host_home_dir().anchor))
 
 
+def configured_default_workspace_root() -> str | None:
+    """Return the instance-wide workspace root configured by environment.
+
+    The configured directory is an enforcement boundary, not only a UI hint.
+    Invalid configuration is reported immediately so an operator does not
+    accidentally run an instance with an ineffective storage restriction.
+    """
+    raw = os.environ.get("OCTOP_DEFAULT_WORKSPACE_ROOT", "").strip()
+    if not raw:
+        return None
+    try:
+        resolved = normalize_host_path(raw)
+    except OSError as exc:
+        raise ValueError("invalid OCTOP_DEFAULT_WORKSPACE_ROOT") from exc
+    if not resolved.is_dir():
+        raise ValueError(f"OCTOP_DEFAULT_WORKSPACE_ROOT is not an existing directory: {raw}")
+    return host_path_text(resolved)
+
+
 def running_in_container() -> bool:
     """True when the Octop process appears to run inside a container.
 

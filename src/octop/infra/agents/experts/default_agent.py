@@ -15,7 +15,7 @@ from octop.infra.users.resource_policy import (
     POLICY_WORKSPACE_ROOT_DIR,
     effective_workspace_root_dir,
 )
-from octop.infra.utils.host_dirs import host_fs_tree_root
+from octop.infra.utils.host_dirs import configured_default_workspace_root, host_fs_tree_root
 from octop.infra.utils.locale import normalize_locale
 
 logger = logging.getLogger(__name__)
@@ -27,10 +27,13 @@ SETUP_DEFAULT_AGENT_ID = "main"
 def default_home_local_backend(*, root_dir: str | None = None) -> dict[str, Any]:
     """Same local backend as the dashboard create-from-expert default.
 
-    Defaults to host filesystem root; pass *root_dir* when a user
+    Defaults to ``OCTOP_DEFAULT_WORKSPACE_ROOT`` when configured, otherwise
+    the host filesystem root; pass *root_dir* when a user
     ``workspace_root_dir`` policy applies.
     """
-    resolved = (root_dir or "").strip() or host_fs_tree_root()
+    resolved = (
+        (root_dir or "").strip() or configured_default_workspace_root() or host_fs_tree_root()
+    )
     return {
         "type": "local_shell",
         "root_dir": resolved,

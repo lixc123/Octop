@@ -87,6 +87,23 @@ async def test_bootstrap_main_uses_fs_root_backend(catalog: ExpertCatalog) -> No
     assert spec.config["backend"]["root_dir"] == host_fs_tree_root()
 
 
+async def test_bootstrap_uses_instance_default_root(
+    catalog: ExpertCatalog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "octop-data"
+    root.mkdir()
+    monkeypatch.setenv("OCTOP_DEFAULT_WORKSPACE_ROOT", str(root))
+    registry = MagicMock()
+    registry.get_row.return_value = None
+    registry.list_agents.return_value = []
+    registry.create = AsyncMock(return_value=object())
+
+    await bootstrap_default_agent(registry, catalog, user_id=1)
+
+    spec = registry.create.await_args.args[0]
+    assert spec.config["backend"]["root_dir"] == root.resolve().as_posix()
+
+
 async def test_bootstrap_respects_policy_root_dir(catalog: ExpertCatalog, tmp_path: Path) -> None:
     registry = MagicMock()
     registry.get_row.return_value = None

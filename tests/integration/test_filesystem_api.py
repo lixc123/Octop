@@ -143,6 +143,33 @@ async def test_filesystem_defaults_in_container(
 
 
 @pytest.mark.asyncio
+async def test_filesystem_defaults_use_instance_root_and_reject_outside(
+    env_admin_client: tuple[httpx.AsyncClient, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, auth = env_admin_client
+    root = tmp_path / "octop-data"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
+    monkeypatch.setenv("OCTOP_DEFAULT_WORKSPACE_ROOT", str(root))
+
+    defaults = await client.get("/api/filesystem/defaults", headers=auth)
+    assert defaults.status_code == 200, defaults.text
+    assert defaults.json()["default_root_dir"] == root.resolve().as_posix()
+    assert defaults.json()["tree_root"] == root.resolve().as_posix()
+
+    allowed = await client.get(f"/api/filesystem/dirs?path={root.as_posix()}", headers=auth)
+    assert allowed.status_code == 200, allowed.text
+
+    denied = await client.get(f"/api/filesystem/dirs?path={outside.as_posix()}", headers=auth)
+    assert denied.status_code == 400, denied.text
+    assert denied.json()["error"]["code"] == "WORKSPACE_OP_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
 async def test_non_admin_can_list_outside_home(
     env: tuple[httpx.AsyncClient, Any, dict[str, str]],
     monkeypatch: pytest.MonkeyPatch,

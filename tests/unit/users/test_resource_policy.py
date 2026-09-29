@@ -20,6 +20,7 @@ from octop.infra.users.resource_policy import (
     assert_agent_quota_available,
     assert_backend_within_user_root,
     assert_token_quota_available,
+    effective_backend_workspace_root,
     normalize_workspace_root_dir,
     public_policy_fields,
 )
@@ -36,6 +37,26 @@ def test_normalize_workspace_root_dir_unlimited(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
     assert normalize_workspace_root_dir(None) is None
     assert normalize_workspace_root_dir("  ") is None
+
+
+def test_instance_default_workspace_root_is_used_when_policy_is_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "octop-data"
+    root.mkdir()
+    monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
+    monkeypatch.setenv("OCTOP_DEFAULT_WORKSPACE_ROOT", str(root))
+    assert effective_backend_workspace_root(None) == root.resolve().as_posix()
+    assert (
+        effective_backend_workspace_root({"value": str(root / "child")})
+        == (root / "child").resolve().as_posix()
+    )
+
+    with pytest.raises(ValueError, match="outside allowed workspace root"):
+        assert_backend_within_user_root(
+            {"type": "local_shell", "root_dir": str(tmp_path / "outside")},
+            None,
+        )
 
 
 def test_normalize_workspace_root_dir_must_be_directory(

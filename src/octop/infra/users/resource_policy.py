@@ -10,6 +10,7 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.host_dirs import (
     assert_backend_root_dirs_allowed,
     assert_safe_host_path,
+    configured_default_workspace_root,
     host_path_text,
     iter_local_backend_root_dirs,
     running_in_container,
@@ -59,6 +60,19 @@ def effective_workspace_root_dir(raw: Any) -> str | None:
     if running_in_container():
         return None
     return workspace_root_dir_of(raw)
+
+
+def effective_backend_workspace_root(raw: Any) -> str | None:
+    """Effective local-backend jail: user policy, then instance default."""
+    policy_root = effective_workspace_root_dir(raw)
+    default_root = configured_default_workspace_root()
+    if not policy_root or not default_root:
+        return policy_root or default_root
+    try:
+        normalized = assert_safe_host_path(policy_root, restrict_to_root=default_root)
+    except ValueError as exc:
+        raise ValueError("stored workspace root is outside OCTOP_DEFAULT_WORKSPACE_ROOT") from exc
+    return host_path_text(normalized)
 
 
 def token_quota_of(raw: Any) -> int | None:
@@ -120,7 +134,18 @@ def normalize_workspace_root_dir(raw: str | None) -> str | None:
             ErrorCode.WORKSPACE_ROOT_CONTAINER_UNSUPPORTED,
             "workspace root policy is unavailable in container deployments",
         )
-    path = assert_safe_host_path(str(raw).strip(), restrict_to_home=False)
+    try:
+        configured_root = configured_default_workspace_root()
+    except ValueError as exc:
+        raise OctopError(ErrorCode.WORKSPACE_ROOT_RESTRICTED, str(exc)) from exc
+    try:
+        path = assert_safe_host_path(
+            str(raw).strip(),
+            restrict_to_home=False,
+            restrict_to_root=configured_root,
+        )
+    except ValueError as exc:
+        raise OctopError(ErrorCode.WORKSPACE_ROOT_RESTRICTED, str(exc)) from exc
     resolved = os.path.realpath(os.fspath(path))
     drive, _tail = os.path.splitdrive(resolved)
     # Own drive root on Windows, ``/`` on POSIX. ``startswith`` after
@@ -161,6 +186,7 @@ def assert_backend_within_user_root(backend: Any, allowed_root: str | None) -> N
     """Raise ``ValueError`` when a local backend root is outside *allowed_root*."""
     if backend is None:
         return
+    allowed_root = allowed_root or configured_default_workspace_root()
     if not allowed_root:
         assert_backend_root_dirs_allowed(backend, restrict_to_home=False)
         return
@@ -169,8 +195,10 @@ def assert_backend_within_user_root(backend: Any, allowed_root: str | None) -> N
 
 
 def raise_if_backend_outside_user_root(policy_repo: Any, user_id: int, backend: Any) -> None:
-    allowed = effective_workspace_root_dir(policy_repo.get(user_id, POLICY_WORKSPACE_ROOT_DIR))
     try:
+        allowed = effective_backend_workspace_root(
+            policy_repo.get(user_id, POLICY_WORKSPACE_ROOT_DIR)
+        )
         assert_backend_within_user_root(backend, allowed)
     except ValueError as exc:
         code = (

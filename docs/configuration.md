@@ -53,6 +53,12 @@ The root can be overridden with `OCTOP_HOME` (absolute path). Most
 sub-paths are exposed as properties on `PathLayout` in
 `octop.infra.utils.paths`.
 
+For a multi-user Windows deployment, set `OCTOP_DEFAULT_WORKSPACE_ROOT` to an
+existing directory such as `D:\OctopData`. This is an instance-wide boundary:
+users can select that directory or a child directory, but cannot select another
+drive or path outside it. A user's or role's `workspace_root_dir` policy can
+narrow the boundary further. New local agents use this directory by default.
+
 ## `config.json`
 
 Generated with defaults on first run; merged with environment overrides
@@ -133,6 +139,7 @@ Each variable, when set, takes precedence over the matching key in
 | Variable | Type | Default | Effect |
 |----------|------|---------|--------|
 | `OCTOP_HOME` | path | `~/.octop` | Install root (DB, secrets, workspaces, plugins) |
+| `OCTOP_DEFAULT_WORKSPACE_ROOT` | path | empty | Instance-wide default and boundary for local backend roots; must be an existing directory |
 | `OCTOP_BIND_HOST` | string | `127.0.0.1` | Listen address (use `0.0.0.0` for LAN access) |
 | `OCTOP_PORT` | int | `8088` | Listen port (`0`–`65535`; `0` asks the OS for a free port) |
 | `OCTOP_LOG_LEVEL` | string | `info` | One of `debug` `info` `warning` `error` |

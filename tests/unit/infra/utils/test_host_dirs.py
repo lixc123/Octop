@@ -9,6 +9,7 @@ import pytest
 
 from octop.infra.utils.host_dirs import (
     assert_safe_host_path,
+    configured_default_workspace_root,
     host_home_dir,
     is_within_host_home,
     list_host_subdirs,
@@ -21,6 +22,19 @@ from octop.infra.utils.host_dirs import (
 # These tests assert POSIX path semantics (/proc, /etc, /root, "/" root, "~" home).
 # The denied-prefix logic and "/" root probe are intentionally POSIX-only.
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX-only path semantics")
+
+
+def test_configured_default_workspace_root_requires_existing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "octop-data"
+    root.mkdir()
+    monkeypatch.setenv("OCTOP_DEFAULT_WORKSPACE_ROOT", str(root))
+    assert configured_default_workspace_root() == root.resolve().as_posix()
+
+    root.rmdir()
+    with pytest.raises(ValueError, match="OCTOP_DEFAULT_WORKSPACE_ROOT"):
+        configured_default_workspace_root()
 
 
 @posix_only

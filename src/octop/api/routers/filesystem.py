@@ -7,9 +7,10 @@ Security notes:
   A denylist further blocks sensitive mounts (``/proc``, ``/sys``, ``/dev``,
   ``/etc``, ``/root`` on POSIX). The process home is never denied (so uid 0
   with home ``/root`` can use the default picker path).
-- All authenticated users may browse from host root ``/`` (denylist still applies).
-  The UI default ``root_dir`` is host filesystem root (POSIX ``/``), unless the
-  user has a ``workspace_root_dir`` policy jail.
+- All authenticated users may browse from host root ``/`` (denylist still applies)
+  when no instance default is configured. The UI default ``root_dir`` is the
+  instance ``OCTOP_DEFAULT_WORKSPACE_ROOT`` when set; a user
+  ``workspace_root_dir`` policy jail overrides it.
 - Directory listing is capped and skips unreadable entries.
 - Write probe creates a short-lived dotfile only for non-``/`` selections.
 - mkdir / rename only allow basename-safe names under already-browsable parents.
@@ -28,7 +29,7 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import User
 from octop.infra.users.resource_policy import (
     POLICY_WORKSPACE_ROOT_DIR,
-    effective_workspace_root_dir,
+    effective_backend_workspace_root,
 )
 from octop.infra.utils.bwrap import ensure_bubblewrap
 from octop.infra.utils.docker_env import docker_status, ensure_docker
@@ -47,9 +48,12 @@ router = APIRouter()
 
 
 def _user_workspace_root(server: Any, user: User) -> str | None:
-    return effective_workspace_root_dir(
-        server.services.user_policy_repo.get(user.id, POLICY_WORKSPACE_ROOT_DIR)
-    )
+    try:
+        return effective_backend_workspace_root(
+            server.services.user_policy_repo.get(user.id, POLICY_WORKSPACE_ROOT_DIR)
+        )
+    except ValueError as exc:
+        raise OctopError(ErrorCode.WORKSPACE_ROOT_RESTRICTED, str(exc)) from exc
 
 
 class ProbeBody(BaseModel):
@@ -79,8 +83,9 @@ async def filesystem_defaults(
 ) -> dict[str, Any]:
     """Return browse-tree / default root_dir for the current user.
 
-    Unrestricted users get filesystem root; a workspace-root policy jail sets
-    both ``default_root_dir`` and ``tree_root`` to that path.
+    Users without a narrower policy get the instance default backend root when
+    configured, otherwise the historical host root. The tree and default value
+    always share the same effective root.
     """
     in_container = running_in_container()
     allowed = _user_workspace_root(server, user)

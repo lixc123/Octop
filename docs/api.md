@@ -361,7 +361,10 @@ Browse the host OS directory tree when configuring a local backend
 `root_dir` (`local_shell` / `filesystem`). Authenticated users only;
 sensitive mounts (`/proc`, `/sys`, `/dev`, `/etc`, `/root` on POSIX)
 are rejected, except the process home and its subdirectories (so a
-server running as root may use `/root` as the default `root_dir`).
+server running as root may use `/root` as the default `root_dir`). When
+`OCTOP_DEFAULT_WORKSPACE_ROOT` is configured, it becomes the default tree root
+and all directory operations plus agent creation are restricted to that path
+and its descendants; user/role `workspace_root_dir` policies may narrow it.
 Listing is single-level and capped; write probe runs only
 for non-`/` paths.
 
