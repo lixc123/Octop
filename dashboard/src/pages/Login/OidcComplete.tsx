@@ -13,6 +13,12 @@ import { refreshServerLabels } from "../../i18n";
 import { apiErrorMessage } from "../../utils/apiError";
 import { applyUserLocale } from "../../utils/locale";
 import { notifySsoOpener } from "../../utils/ssoPopup";
+import {
+  OCTOP_EMBED_ERROR,
+  OCTOP_EMBED_READY,
+  notifyWxztEmbed,
+  rememberWxztNavigation,
+} from "../../utils/wxztNavigation";
 
 const DEFAULT_REDIRECT = "/chat";
 
@@ -35,7 +41,12 @@ export function safeRedirect(path: string | null): string {
 export function readOidcCompleteParams(
   hash: string,
   search: string,
-): { code: string | null; redirect: string | null; bind: boolean } {
+): {
+  code: string | null;
+  redirect: string | null;
+  bind: boolean;
+  embedded: boolean;
+} {
   const fromHash = new URLSearchParams(
     hash.startsWith("#") ? hash.slice(1) : hash,
   );
@@ -43,10 +54,13 @@ export function readOidcCompleteParams(
     search.startsWith("?") ? search.slice(1) : search,
   );
   const bind = (fromHash.get("bind") || fromQuery.get("bind") || "") === "1";
+  const embedded =
+    (fromHash.get("embedded") || fromQuery.get("embedded") || "") === "1";
   return {
     code: fromHash.get("code") || fromQuery.get("code"),
     redirect: fromHash.get("redirect") || fromQuery.get("redirect"),
     bind,
+    embedded,
   };
 }
 
@@ -60,12 +74,21 @@ export default function OidcComplete() {
     if (did.current) return;
     did.current = true;
 
-    const { code, redirect, bind } = readOidcCompleteParams(
+    const { code, redirect, bind, embedded } = readOidcCompleteParams(
       window.location.hash,
       window.location.search,
     );
+    const isWxzt = window.location.pathname === "/login/wxzt";
+    const isEmbeddedWxzt = isWxzt && embedded && window.parent !== window;
+    const wxztReturnUrl = new URLSearchParams(window.location.search).get(
+      "return_url",
+    );
     if (!code) {
       const text = t("login.oidcComplete.missingCode");
+      if (isEmbeddedWxzt) {
+        rememberWxztNavigation(wxztReturnUrl || undefined);
+        if (notifyWxztEmbed(OCTOP_EMBED_ERROR, { error: text })) return;
+      }
       if (notifySsoOpener({ ok: false, error: "generic", bind })) return;
       setError(text);
       message.error(text);
@@ -77,9 +100,43 @@ export default function OidcComplete() {
       window.history.replaceState(null, "", window.location.pathname);
     }
 
-    void authApi
-      .exchangeOidcCode(code)
+    if (isEmbeddedWxzt) {
+      // Keep a validated target available for the error/ready handshake. The
+      // value is still constrained by rememberWxztNavigation's allowlist.
+      rememberWxztNavigation(wxztReturnUrl || undefined);
+    }
+
+    const exchange = isWxzt
+      ? authApi.exchangeWxztCode(code, wxztReturnUrl || undefined)
+      : authApi.exchangeOidcCode(code);
+    void exchange
       .then(async (res) => {
+        if (isWxzt) {
+          const remember = getRememberLoginPreference();
+          setAuthToken(res.access_token, remember);
+          rememberWxztNavigation(res.return_url, res.logout_url);
+          await applyUserLocale(res.user.locale);
+          void refreshServerLabels(res.user.locale);
+          if (isEmbeddedWxzt) {
+            if (notifyWxztEmbed(OCTOP_EMBED_READY)) {
+              navigate("/chat", { replace: true });
+            } else {
+              setError(t("login.oidcComplete.failed"));
+              message.error(t("login.oidcComplete.failed"));
+            }
+            return;
+          }
+          const destination = res.return_url || "/chat";
+          // The backend has already constrained this to the configured wxzt
+          // origin and canonical AI Hub path. Keep a local fallback if a
+          // deployment omits the return URL entirely.
+          if (/^https?:\/\//i.test(destination)) {
+            window.location.replace(destination);
+          } else {
+            navigate(safeRedirect(destination), { replace: true });
+          }
+          return;
+        }
         const dest = safeRedirect(redirect);
         if (bind) {
           // Account-link popups: opener already holds the session — do not
@@ -112,6 +169,12 @@ export default function OidcComplete() {
       })
       .catch((err) => {
         const text = apiErrorMessage(err, t("login.oidcComplete.failed"), t);
+        if (
+          isEmbeddedWxzt &&
+          notifyWxztEmbed(OCTOP_EMBED_ERROR, { error: text })
+        ) {
+          return;
+        }
         if (notifySsoOpener({ ok: false, error: "exchange", bind })) return;
         setError(text);
         message.error(text);

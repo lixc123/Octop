@@ -14,6 +14,7 @@ from octop.infra.db.services import build_shared_services
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role
 from octop.infra.users.manager import UserManager
+from octop.infra.users.password import verify_password
 from octop.infra.utils.paths import PathLayout
 
 
@@ -159,6 +160,44 @@ async def test_sso_create_then_updates_same_subject(manager: UserManager):
     row = manager.get_row(user.id)
     assert row.display_name == "Alice"
     assert row.email == "alice-2@example.com"
+
+
+async def test_wxzt_sso_users_get_default_local_password(manager: UserManager):
+    provider_id = _insert_sso_provider(manager, kind="wxzt")
+    user = await manager.resolve_or_create_sso_user(
+        provider_id=provider_id,
+        subject="wxzt-sub-1",
+        claims={"preferred_username": "wxzt-alice", "name": "Alice"},
+    )
+
+    row = manager.get_row(user.id)
+    assert row is not None
+    assert row.password_hash is not None
+    assert verify_password("Yx123456", row.password_hash)
+    assert await manager.authenticate(user.username, "Yx123456") is not None
+
+
+async def test_existing_passwordless_wxzt_user_is_backfilled(manager: UserManager):
+    provider_id = _insert_sso_provider(manager, kind="wxzt")
+    user_id = manager._services.user_repo.create(
+        username="wxzt-existing",
+        password_hash=None,
+        role="user",
+        sso_provider_id=provider_id,
+        sso_subject="wxzt-existing-sub",
+    )
+
+    user = await manager.resolve_or_create_sso_user(
+        provider_id=provider_id,
+        subject="wxzt-existing-sub",
+        claims={"preferred_username": "wxzt-existing", "name": "Existing"},
+    )
+
+    assert user.id == user_id
+    row = manager.get_row(user_id)
+    assert row is not None
+    assert row.password_hash is not None
+    assert verify_password("Yx123456", row.password_hash)
 
 
 async def test_sso_create_recovers_when_another_worker_wins_identity_race(

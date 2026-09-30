@@ -39,6 +39,7 @@ from octop.infra.utils.locale import normalize_locale
 logger = logging.getLogger(__name__)
 _USERNAME_ALLOWED = re.compile(r"[^a-zA-Z0-9_.-]")
 _MAX_USERNAME_LENGTH = 64
+_WXZT_DEFAULT_LOCAL_PASSWORD = "Yx123456"
 
 
 def allocate_username(repo: UserRepo, claims: dict[str, Any], subject: str) -> str:
@@ -246,6 +247,8 @@ class UserManager:
     ) -> User:
         async with self._lock:
             row = self._services.user_repo.get_by_sso(provider_id, subject)
+            provider = self._services.sso_repo.get_by_id(provider_id)
+            is_wxzt = provider is not None and provider.kind == "wxzt"
             email = _normalized_claim_email(claims)
             display_name = _claim_display_name(claims)
 
@@ -267,7 +270,9 @@ class UserManager:
                     try:
                         uid = self._services.user_repo.create(
                             username=username,
-                            password_hash=None,
+                            password_hash=(
+                                hash_password(_WXZT_DEFAULT_LOCAL_PASSWORD) if is_wxzt else None
+                            ),
                             role=sso_role_id,
                             display_name=display_name,
                             email=email,
@@ -307,6 +312,11 @@ class UserManager:
             assert row is not None  # The retry loop either returns, raises, or finds this identity.
             if row.disabled:
                 raise OctopError(ErrorCode.USER_DISABLED, "user is disabled")
+            if is_wxzt and row.password_hash is None:
+                self._services.user_repo.set_password_hash(
+                    row.id,
+                    hash_password(_WXZT_DEFAULT_LOCAL_PASSWORD),
+                )
             if email is not None:
                 email_owner = self._services.user_repo.get_by_email(email)
                 if email_owner is not None and email_owner.id != row.id:

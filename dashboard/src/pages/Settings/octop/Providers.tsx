@@ -38,6 +38,7 @@ interface ProviderRow {
   kind: string;
   base_url: string | null;
   api_key: string | null;
+  api_key_configured?: boolean;
   note: string | null;
   enabled: boolean;
 }

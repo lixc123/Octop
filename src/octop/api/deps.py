@@ -32,12 +32,14 @@ def sign_token(
     uname: str,
     role: str,
     ttl_seconds: int = 86400,
+    auth_source: str = "local",
 ) -> str:
     now = int(time.time())
     payload = {
         "sub": str(sub),
         "uname": uname,
         "role": role,
+        "auth_source": auth_source,
         "iat": now,
         "exp": now + ttl_seconds,
     }
@@ -82,6 +84,7 @@ _JWT_EXEMPT_EXACT = (
     "/api/auth/oauth/start",
     "/api/auth/oauth/callback",
     "/api/auth/oauth/exchange",
+    "/api/auth/wxzt/exchange",
     "/api/auth/invite/validate",
     "/api/auth/invite/redeem",
     "/api/docs",
@@ -132,6 +135,18 @@ def _decode(server: OctopServer, token: str) -> dict[str, Any]:
     if secret is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "jwt secret missing")
     try:
+        revoked = getattr(server, "_revoked_tokens", {})
+        now = int(time.time())
+        if isinstance(revoked, dict):
+            # Keep this process-local fallback bounded when Redis is not part of
+            # the deployment. WebSocket/SSE handlers also call this function.
+            for stale, expires_at in list(revoked.items()):
+                if int(expires_at) <= now:
+                    revoked.pop(stale, None)
+            if token in revoked:
+                raise InvalidToken("token revoked")
+        elif token in revoked:  # compatibility with older server instances
+            raise InvalidToken("token revoked")
         return decode_token(secret, token)
     except TokenExpired as exc:
         raise OctopError(ErrorCode.TOKEN_EXPIRED, "token expired") from exc
@@ -170,6 +185,7 @@ def maybe_sliding_renew_token(server: OctopServer, token: str, user: User) -> st
         uname=user.username,
         role=user.role,
         ttl_seconds=ttl,
+        auth_source=str(payload.get("auth_source") or "local"),
     )
 
 
@@ -180,7 +196,40 @@ def authenticate_request(request: Request, server: OctopServer) -> User:
     )
     if not raw:
         raise OctopError(ErrorCode.AUTH_FAILED, "missing credentials")
-    return resolve_user_from_token(server, raw)
+    payload = _decode(server, raw)
+    assert server.user_manager is not None
+    user = server.user_manager.get_by_id(int(payload["sub"]))
+    if user is None:
+        raise OctopError(ErrorCode.USER_DISABLED, "user not active")
+    request.state.octop_auth_source = str(payload.get("auth_source") or "local")
+    request.state.octop_raw_token = raw
+    return user
+
+
+def revoke_request_token(server: OctopServer, token: str | None) -> None:
+    """Revoke the current request token until its natural expiry.
+
+    The in-process map closes the refresh-after-logout window for the common
+    single-process deployment and is bounded by each token's expiry. Deployments
+    with multiple workers should additionally put the same token id in a shared
+    gateway/session revocation store.
+    """
+    if not token:
+        return
+    revoked = getattr(server, "_revoked_tokens", None)
+    if not isinstance(revoked, dict):
+        revoked = {}
+        server._revoked_tokens = revoked
+    assert server.services is not None
+    expires_at = int(time.time()) + int(server.services.config.access_token_ttl_seconds)
+    try:
+        secret = server.services.secret_repo.get("jwt")
+        if secret is not None:
+            payload = decode_token(secret, token)
+            expires_at = int(payload.get("exp") or expires_at)
+    except Exception:
+        pass
+    revoked[token] = max(expires_at, int(time.time()) + 1)
 
 
 async def current_user(

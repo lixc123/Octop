@@ -65,6 +65,8 @@ export interface OctopUser {
   avatar_icon?: string | null;
   /** Uploaded portrait. Shown ahead of the preset when present. */
   avatar_url?: string | null;
+  /** Trusted server-side login source (local or wxzt). */
+  auth_source?: "local" | "wxzt" | string;
 }
 
 export interface LoginResponse {
@@ -74,6 +76,8 @@ export interface LoginResponse {
   user: OctopUser;
   /** Legacy alias for ``access_token`` so old callers using ``.token`` keep working. */
   token: string;
+  return_url?: string;
+  logout_url?: string;
 }
 
 export interface PublicCaptcha {
@@ -238,6 +242,21 @@ export const authApi = {
       method: "POST",
       body: JSON.stringify({ code }),
     });
+    return { ...raw, token: raw.access_token };
+  },
+
+  /** Exchange a wxzt one-time ticket issued by the wxzt backend. */
+  exchangeWxztCode: async (
+    code: string,
+    returnUrl?: string,
+  ): Promise<LoginResponse & { return_url?: string; logout_url?: string }> => {
+    const raw = await request<RawLoginResponse & { return_url?: string; logout_url?: string }>(
+      "/auth/wxzt/exchange",
+      {
+        method: "POST",
+        body: JSON.stringify({ code, return_url: returnUrl }),
+      },
+    );
     return { ...raw, token: raw.access_token };
   },
 

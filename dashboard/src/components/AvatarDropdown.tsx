@@ -26,6 +26,7 @@ import {
   Lock,
   LockOpen,
   SlidersHorizontal,
+  ArrowLeft,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -47,6 +48,13 @@ import type { OctopUser } from "../api/modules/auth";
 import { useLayoutMode } from "../context/LayoutModeContext";
 import type { LayoutMode } from "../layouts/layoutModeStorage";
 import { userCan } from "../utils/permissions";
+import {
+  OCTOP_EMBED_LOGOUT,
+  clearWxztNavigation,
+  getWxztLogoutUrl,
+  getWxztReturnUrl,
+  navigateToWxzt,
+} from "../utils/wxztNavigation";
 import feishuIcon from "../assets/channels/feishu.svg";
 import dingtalkIcon from "../assets/channels/dingtalk.svg";
 import wecomIcon from "../assets/channels/wecom.svg";
@@ -107,6 +115,7 @@ export default function AvatarDropdown({
   const role = useUserRole();
   const isMobile = useIsMobile();
   const { layoutMode, setLayoutMode } = useLayoutMode();
+  const isWxztUser = user?.auth_source === "wxzt";
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -125,11 +134,17 @@ export default function AvatarDropdown({
 
   const handleLogout = useCallback(async () => {
     setMenuOpen(false);
+    const wxztLogoutUrl = isWxztUser ? getWxztLogoutUrl() : null;
     await authApi.logout();
     clearAuthToken();
     await applyGuestLocale();
+    if (wxztLogoutUrl) {
+      navigateToWxzt(wxztLogoutUrl, OCTOP_EMBED_LOGOUT);
+      return;
+    }
+    clearWxztNavigation();
     navigate("/login", { replace: true });
-  }, [navigate]);
+  }, [isWxztUser, navigate]);
 
   const handleSaveProfile = async (values: { display_name: string }) => {
     setSaving(true);
@@ -300,13 +315,15 @@ export default function AvatarDropdown({
       .me()
       .then((next) => onUserChange?.(next))
       .catch(() => undefined);
-    void authApi
-      .getOauthStatus()
-      .then((status) =>
-        setSsoProviders(status.providers.filter((item) => item.enabled)),
-      )
-      .catch(() => undefined);
-  }, [onUserChange, settingsOpen]);
+    if (!isWxztUser) {
+      void authApi
+        .getOauthStatus()
+        .then((status) =>
+          setSsoProviders(status.providers.filter((item) => item.enabled)),
+        )
+        .catch(() => undefined);
+    }
+  }, [isWxztUser, onUserChange, settingsOpen]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -369,27 +386,46 @@ export default function AvatarDropdown({
         <ThemeSwitcher compact />
       </div>
 
-      <a
-        className={styles.menuItem}
-        href={HELP_FEEDBACK_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={() => setMenuOpen(false)}
-      >
-        <CircleHelp size={16} strokeWidth={1.8} />
-        <span>{t("account.helpFeedback")}</span>
-      </a>
+      {isWxztUser && getWxztReturnUrl() ? (
+        <button
+          type="button"
+          className={styles.menuItem}
+          onClick={() => {
+            const url = getWxztReturnUrl();
+            setMenuOpen(false);
+            navigateToWxzt(url);
+          }}
+        >
+          <ArrowLeft size={16} strokeWidth={1.8} />
+          <span>{t("account.returnToWxzt", "返回 AI 主页")}</span>
+        </button>
+      ) : null}
 
-      <a
-        className={styles.menuItem}
-        href={GITHUB_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={() => setMenuOpen(false)}
-      >
-        <Github size={16} strokeWidth={1.8} />
-        <span>{t("account.projectUrl")}</span>
-      </a>
+      {!isWxztUser && (
+        <a
+          className={styles.menuItem}
+          href={HELP_FEEDBACK_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => setMenuOpen(false)}
+        >
+          <CircleHelp size={16} strokeWidth={1.8} />
+          <span>{t("account.helpFeedback")}</span>
+        </a>
+      )}
+
+      {!isWxztUser && (
+        <a
+          className={styles.menuItem}
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => setMenuOpen(false)}
+        >
+          <Github size={16} strokeWidth={1.8} />
+          <span>{t("account.projectUrl")}</span>
+        </a>
+      )}
 
       {onCustomizeNav ? (
         <button
@@ -407,12 +443,18 @@ export default function AvatarDropdown({
         <span>{t("account.settings")}</span>
       </button>
 
-      <button type="button" className={styles.menuItem} onClick={openPassword}>
-        <KeyRound size={16} strokeWidth={1.8} />
-        <span>{t("account.changePassword")}</span>
-      </button>
+      {!isWxztUser && (
+        <button
+          type="button"
+          className={styles.menuItem}
+          onClick={openPassword}
+        >
+          <KeyRound size={16} strokeWidth={1.8} />
+          <span>{t("account.changePassword")}</span>
+        </button>
+      )}
 
-      {userCan(user, "update") && (
+      {!isWxztUser && userCan(user, "update") && (
         <button
           type="button"
           className={styles.menuItem}
@@ -434,7 +476,11 @@ export default function AvatarDropdown({
         onClick={() => void handleLogout()}
       >
         <LogOut size={16} strokeWidth={1.8} />
-        <span>{t("auth.logout")}</span>
+        <span>
+          {isWxztUser
+            ? t("account.logoutWxzt", { defaultValue: "退出 wxzt" })
+            : t("auth.logout")}
+        </span>
       </button>
     </div>
   );
@@ -506,93 +552,99 @@ export default function AvatarDropdown({
         </div>
       </div>
 
-      <section className={styles.settingsSection}>
-        <div className={styles.settingsSectionHead}>
-          <h3 className={styles.settingsSectionTitle}>{t("account.avatar")}</h3>
-          <p className={styles.settingsSectionDesc}>
-            {t("account.avatarHint")}
-          </p>
-        </div>
-        {user ? (
-          <ProfileAvatarPicker
-            kind="user"
-            avatarUrl={user.avatar_url}
-            icon={user.avatar_icon}
-            onSelectIcon={async (icon) => {
-              try {
-                onUserChange?.(await authApi.setAvatarIcon(icon));
-              } catch (err) {
-                message.error(
-                  apiErrorMessage(err, t("experts.avatarUploadFailed"), t),
-                );
-                throw err;
-              }
-            }}
-            onPick={async (file) => {
-              try {
-                const result = await authApi.uploadAvatar(file);
-                onUserChange?.({ ...user, avatar_url: result.avatar_url });
-              } catch (err) {
-                message.error(
-                  apiErrorMessage(err, t("experts.avatarUploadFailed"), t),
-                );
-                throw err;
-              }
-            }}
-            onRemove={async () => {
-              try {
-                await authApi.deleteAvatar();
-                onUserChange?.({ ...user, avatar_url: null });
-              } catch (err) {
-                message.error(
-                  apiErrorMessage(err, t("experts.avatarRemoveFailed"), t),
-                );
-                throw err;
-              }
-            }}
-          />
-        ) : null}
-      </section>
-
-      <Divider className={styles.settingsDivider} />
-
-      <section className={styles.settingsSection}>
-        <div className={styles.settingsSectionHead}>
-          <h3 className={styles.settingsSectionTitle}>
-            {t("account.displayName")}
-          </h3>
-          <p className={styles.settingsSectionDesc}>
-            {t("account.displayNameHint")}
-          </p>
-        </div>
-        <Form
-          form={profileForm}
-          onFinish={handleSaveProfile}
-          layout="vertical"
-          requiredMark={false}
-          initialValues={{ display_name: user?.display_name || "" }}
-          className={styles.settingsForm}
-        >
-          <Form.Item
-            name="display_name"
-            style={{ marginBottom: 12 }}
-            rules={[
-              {
-                max: 64,
-                message: t("account.displayNameTooLong"),
-              },
-            ]}
-          >
-            <Input
-              placeholder={t("account.displayNamePlaceholder")}
-              maxLength={64}
+      {!isWxztUser && (
+        <section className={styles.settingsSection}>
+          <div className={styles.settingsSectionHead}>
+            <h3 className={styles.settingsSectionTitle}>
+              {t("account.avatar")}
+            </h3>
+            <p className={styles.settingsSectionDesc}>
+              {t("account.avatarHint")}
+            </p>
+          </div>
+          {user ? (
+            <ProfileAvatarPicker
+              kind="user"
+              avatarUrl={user.avatar_url}
+              icon={user.avatar_icon}
+              onSelectIcon={async (icon) => {
+                try {
+                  onUserChange?.(await authApi.setAvatarIcon(icon));
+                } catch (err) {
+                  message.error(
+                    apiErrorMessage(err, t("experts.avatarUploadFailed"), t),
+                  );
+                  throw err;
+                }
+              }}
+              onPick={async (file) => {
+                try {
+                  const result = await authApi.uploadAvatar(file);
+                  onUserChange?.({ ...user, avatar_url: result.avatar_url });
+                } catch (err) {
+                  message.error(
+                    apiErrorMessage(err, t("experts.avatarUploadFailed"), t),
+                  );
+                  throw err;
+                }
+              }}
+              onRemove={async () => {
+                try {
+                  await authApi.deleteAvatar();
+                  onUserChange?.({ ...user, avatar_url: null });
+                } catch (err) {
+                  message.error(
+                    apiErrorMessage(err, t("experts.avatarRemoveFailed"), t),
+                  );
+                  throw err;
+                }
+              }}
             />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={saving} block>
-            {t("account.saveDisplayName")}
-          </Button>
-        </Form>
-      </section>
+          ) : null}
+        </section>
+      )}
+
+      {!isWxztUser && <Divider className={styles.settingsDivider} />}
+
+      {!isWxztUser && (
+        <section className={styles.settingsSection}>
+          <div className={styles.settingsSectionHead}>
+            <h3 className={styles.settingsSectionTitle}>
+              {t("account.displayName")}
+            </h3>
+            <p className={styles.settingsSectionDesc}>
+              {t("account.displayNameHint")}
+            </p>
+          </div>
+          <Form
+            form={profileForm}
+            onFinish={handleSaveProfile}
+            layout="vertical"
+            requiredMark={false}
+            initialValues={{ display_name: user?.display_name || "" }}
+            className={styles.settingsForm}
+          >
+            <Form.Item
+              name="display_name"
+              style={{ marginBottom: 12 }}
+              rules={[
+                {
+                  max: 64,
+                  message: t("account.displayNameTooLong"),
+                },
+              ]}
+            >
+              <Input
+                placeholder={t("account.displayNamePlaceholder")}
+                maxLength={64}
+              />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" loading={saving} block>
+              {t("account.saveDisplayName")}
+            </Button>
+          </Form>
+        </section>
+      )}
 
       <Divider className={styles.settingsDivider} />
 
@@ -652,7 +704,7 @@ export default function AvatarDropdown({
         <PaletteSwitcher />
       </section>
 
-      {ssoRows.length > 0 && (
+      {!isWxztUser && ssoRows.length > 0 && (
         <>
           <Divider className={styles.settingsDivider} />
           <section className={styles.settingsSection}>

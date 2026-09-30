@@ -5,6 +5,9 @@ import AppVersionBadge from "../components/AppVersionBadge";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
 import { useTheme } from "../context/ThemeContext";
 import { typeSize } from "../utils/mobileTypeScale";
+import { ArrowLeft } from "lucide-react";
+import { useCurrentUser } from "../hooks/useCurrentUser";
+import { getWxztReturnUrl, navigateToWxzt } from "../utils/wxztNavigation";
 
 const { Header: AntHeader } = Layout;
 
@@ -21,6 +24,9 @@ interface HeaderProps {
  */
 export default function Header({ onToggle, isMobile }: HeaderProps) {
   const { isDark } = useTheme();
+  const user = useCurrentUser();
+  const wxztReturnUrl =
+    user?.auth_source === "wxzt" ? getWxztReturnUrl() : null;
   const mobileLogoSrc = isDark
     ? "/logo_horizontal_white.png"
     : "/logo_horizontal_dark.png";
@@ -111,6 +117,35 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
           flexShrink: 0,
         }}
       >
+        {wxztReturnUrl ? (
+          <button
+            type="button"
+            onClick={() => navigateToWxzt(wxztReturnUrl)}
+            aria-label="返回 AI 主页"
+            title="返回 AI 主页"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 3,
+              height: 30,
+              maxWidth: 104,
+              padding: "0 6px",
+              border: "1px solid var(--fn-border-primary)",
+              borderRadius: "var(--fn-radius-md)",
+              background: "transparent",
+              color: "var(--fn-text-secondary)",
+              cursor: "pointer",
+              flexShrink: 0,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            <ArrowLeft size={15} strokeWidth={1.8} />
+            <span>返回 AI 主页</span>
+          </button>
+        ) : null}
         <PwaInstallPrompt compact />
       </div>
     </AntHeader>

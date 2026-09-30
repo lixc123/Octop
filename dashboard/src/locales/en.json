@@ -3746,6 +3746,8 @@
     "myAccount": "My Account",
     "settings": "Personal Settings",
     "appearance": "Appearance",
+    "returnToWxzt": "Back to AI Hub",
+    "logoutWxzt": "Sign out of wxzt",
     "palette": "Palette",
     "paletteHint": "Choose a brand palette, independent of light/dark mode.",
     "language": "Language",

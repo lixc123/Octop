@@ -10,12 +10,38 @@ export function getCanvasCoords(
 ): CanvasPoint {
   if (!canvas) return { x: 0, y: 0 };
   const rect = canvas.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
+  const sourceWidth = canvas.width;
+  const sourceHeight = canvas.height;
+  if (
+    rect.width === 0 ||
+    rect.height === 0 ||
+    sourceWidth === 0 ||
+    sourceHeight === 0
+  ) {
+    return { x: 0, y: 0 };
+  }
+
+  // BrowserViewer uses object-fit: contain. The DOM rect includes the
+  // letterbox bars, so map through the actual fitted bitmap instead of
+  // stretching pointer coordinates across the whole element.
+  const fitScale = Math.min(
+    rect.width / sourceWidth,
+    rect.height / sourceHeight,
+  );
+  const contentWidth = sourceWidth * fitScale;
+  const contentHeight = sourceHeight * fitScale;
+  const offsetX = (rect.width - contentWidth) / 2;
+  const offsetY = (rect.height - contentHeight) / 2;
+  const clamp = (value: number, max: number) =>
+    Math.max(0, Math.min(max, value));
+
   return {
-    x: Math.round((e.clientX - rect.left) * scaleX),
-    y: Math.round((e.clientY - rect.top) * scaleY),
+    x: Math.round(
+      clamp((e.clientX - rect.left - offsetX) / fitScale, sourceWidth),
+    ),
+    y: Math.round(
+      clamp((e.clientY - rect.top - offsetY) / fitScale, sourceHeight),
+    ),
   };
 }
 

@@ -255,6 +255,7 @@ class OctopServer:
         self._started = False
         self._started_at: int | None = None
         self._sso_service: SsoService | None = None
+        self._revoked_tokens: dict[str, int] = {}
 
     # Backward compat: expose user_manager directly
     @property
@@ -328,6 +329,11 @@ class OctopServer:
 
         boot_from_services(self.services.settings_repo, self.services.secret_repo)
         self._ensure_jwt_secret()
+        from octop.infra.agents.providers.wxzt_router import (  # noqa: PLC0415
+            sync_wxzt_router_provider,
+        )
+
+        sync_wxzt_router_provider(self.services)
         await self._boot_runtime(config)
         self._started = True
         assert self.user_manager is not None
@@ -355,6 +361,11 @@ class OctopServer:
 
         boot_from_services(self.services.settings_repo, self.services.secret_repo)
         self._ensure_jwt_secret()
+        from octop.infra.agents.providers.wxzt_router import (  # noqa: PLC0415
+            sync_wxzt_router_provider,
+        )
+
+        sync_wxzt_router_provider(self.services)
         await self._boot_runtime(config)
         logger.info(
             "control-plane database bound driver=%s",

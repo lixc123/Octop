@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
+from octop.api.common.wxzt_sso import allowed_logout_url, allowed_return_url, redeem_ticket
 from octop.api.deps import current_user, get_server, sign_token
 from octop.infra.auth.captcha import current_env, ensure_captcha, load_effective, public_config
 from octop.infra.errors import ErrorCode, OctopError
@@ -28,7 +30,7 @@ def _user_json(user: Any, *, locale: str | None = None) -> dict[str, Any]:
     }
 
 
-def me_payload(user: Any, server: Any) -> dict[str, Any]:
+def me_payload(user: Any, server: Any, *, auth_source: str | None = None) -> dict[str, Any]:
     """Profile JSON for ``/auth/me`` and OAuth bind/unbind responses."""
     payload = _user_json(user, locale=user.locale)
     row = server.user_manager.get_row(user.id)
@@ -37,6 +39,7 @@ def me_payload(user: Any, server: Any) -> dict[str, Any]:
         payload["sso_kind"] = None
         payload["sso_identities"] = []
         payload["has_password"] = True
+        payload["auth_source"] = auth_source or getattr(user, "auth_source", "local")
         return payload
     identities = [{"kind": item.kind} for item in server.user_manager.list_sso_identities(user.id)]
     payload["sso_identities"] = identities
@@ -51,6 +54,7 @@ def me_payload(user: Any, server: Any) -> dict[str, Any]:
         str(user.id),
         f"/api/users/{user.id}/avatar",
     )
+    payload["auth_source"] = auth_source or getattr(user, "auth_source", "local")
     return payload
 
 
@@ -68,6 +72,85 @@ class CaptchaPublicResponse(BaseModel):
 class ChangePasswordBody(BaseModel):
     old_password: str
     new_password: str
+
+
+class WxztExchangeBody(BaseModel):
+    code: str = Field(min_length=20, max_length=256)
+    return_url: str | None = Field(default=None, max_length=2048)
+
+
+def _wxzt_identity_payload(payload: dict[str, object]) -> tuple[str, dict[str, object]]:
+    userid = str(payload.get("userid") or "").strip()
+    username = str(payload.get("username") or "").strip()
+    if not userid or not username:
+        raise ValueError("wxzt identity is incomplete")
+    claims: dict[str, object] = {
+        "preferred_username": f"wxzt_{userid}",
+        "name": str(payload.get("display_name") or username).strip() or username,
+    }
+    email = payload.get("email")
+    if isinstance(email, str) and email.strip():
+        claims["email"] = email.strip()
+    return userid, claims
+
+
+@router.post("/wxzt/exchange", summary="Exchange a wxzt SSO ticket")
+async def wxzt_exchange(
+    body: WxztExchangeBody, server: Any = Depends(get_server)
+) -> dict[str, Any]:
+    """Redeem a wxzt one-time ticket and issue a normal Octop JWT."""
+    try:
+        identity = await redeem_ticket(body.code)
+        subject, claims = _wxzt_identity_payload(identity)
+        provider = server.services.sso_repo.get_by_kind("wxzt")
+        if provider is None:
+            provider = server.services.sso_repo.upsert_by_kind(
+                "wxzt",
+                enabled=True,
+                display_name="wxzt",
+                issuer="",
+                client_id="wxzt",
+                client_secret_enc=None,
+                scopes="openid profile",
+                dashboard_origin=allowed_return_url(None),
+                extra={"managed": True},
+            )
+        user = await server.user_manager.resolve_or_create_sso_user(
+            provider_id=provider.id,
+            subject=subject,
+            claims=claims,
+        )
+    except (ValueError, TypeError) as exc:
+        raise OctopError(ErrorCode.AUTH_FAILED, "invalid or expired wxzt SSO ticket") from exc
+
+    # wxzt is the identity authority. Only a signed, server-to-server role claim
+    # can promote an already trusted local account; the browser cannot request it.
+    trusted_admin_roles = {
+        item.strip()
+        for item in os.environ.get("OCTOP_WXZT_ADMIN_ROLES", "admin").split(",")
+        if item.strip()
+    }
+    if str(identity.get("role") or "") in trusted_admin_roles and not user.is_admin:
+        server.services.user_repo.set_role(user.id, "admin")
+        user.role = "admin"
+    secret = server.services.secret_repo.get("jwt")
+    ttl = server.services.config.access_token_ttl_seconds
+    token = sign_token(
+        secret,
+        sub=user.id,
+        uname=user.username,
+        role=user.role,
+        ttl_seconds=ttl,
+        auth_source="wxzt",
+    )
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "expires_in": ttl,
+        "return_url": allowed_return_url(body.return_url),
+        "logout_url": allowed_logout_url(str(identity.get("logout_url") or "")),
+        "user": {**_user_json(user, locale=user.locale), "auth_source": "wxzt"},
+    }
 
 
 @router.get(
@@ -126,27 +209,39 @@ async def login(
 
 
 @router.post("/logout", status_code=204, summary="Sign out")
-async def logout(user: Any = Depends(current_user), server: Any = Depends(get_server)) -> Response:
-    """Record an audit event for the current session. JWTs are stateless and not revoked server-side."""
+async def logout(
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> Response:
+    """Record logout and revoke the presented JWT for this server process."""
+    from octop.api.deps import revoke_request_token
+
+    revoke_request_token(server, getattr(request.state, "octop_raw_token", None))
     server.services.audit_repo.write(actor=user.username, action="auth.logout")
     return Response(status_code=204)
 
 
 @router.get("/me", summary="Current user profile")
 async def me(
-    user: Any = Depends(current_user), server: Any = Depends(get_server)
+    request: Request, user: Any = Depends(current_user), server: Any = Depends(get_server)
 ) -> dict[str, Any]:
     """Return the authenticated user's id, username, role, display name, and locale."""
-    return me_payload(user, server)
+    return me_payload(
+        user, server, auth_source=getattr(request.state, "octop_auth_source", "local")
+    )
 
 
 @router.post("/change-password", status_code=204, summary="Change password")
 async def change_password(
     body: ChangePasswordBody,
+    request: Request,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> Response:
     """Verify the old password and set a new one for the current user."""
+    if getattr(request.state, "octop_auth_source", "local") == "wxzt":
+        raise OctopError(ErrorCode.FORBIDDEN, "wxzt users must change their password in wxzt")
     await server.user_manager.change_password(user.username, body.old_password, body.new_password)
     return Response(status_code=204)
 
@@ -160,6 +255,7 @@ class UpdateMeBody(BaseModel):
 @router.patch("/me", summary="Update profile")
 async def update_me(
     body: UpdateMeBody,
+    request: Request,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
@@ -181,7 +277,11 @@ async def update_me(
         delete_profile_avatar(server.services.paths.user_avatars_dir, str(user.id))
     updated = server.user_manager.get(user.username)
     assert updated is not None
-    return me_payload(updated, server)
+    return me_payload(
+        updated,
+        server,
+        auth_source=getattr(request.state, "octop_auth_source", "local"),
+    )
 
 
 @router.post("/me/avatar", status_code=201, summary="Upload the current user's portrait")

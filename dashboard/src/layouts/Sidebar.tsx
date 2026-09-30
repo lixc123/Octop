@@ -5,7 +5,7 @@ import type { TFunction } from "i18next";
 import AvatarDropdown from "../components/AvatarDropdown";
 import AppVersionBadge from "../components/AppVersionBadge";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
-import { ArrowRightLeft, ChevronDown, X } from "lucide-react";
+import { ArrowLeft, ArrowRightLeft, ChevronDown, X } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useLayoutMode } from "../context/LayoutModeContext";
 import { useUserRole } from "../hooks/useUserRole";
@@ -38,6 +38,7 @@ import SidebarNavCustomizer from "./SidebarNavCustomizer";
 import styles from "./Sidebar.module.less";
 import { typeSize } from "../utils/mobileTypeScale";
 import { DESKTOP_DRAG_REGION_CLASS } from "../utils/desktopChrome";
+import { getWxztReturnUrl, navigateToWxzt } from "../utils/wxztNavigation";
 
 const NAV_GROUPS_STORAGE_KEY = "octop:sidebar-nav-groups";
 const LEGACY_COLLAPSED_GROUP_IDS: Record<string, string> = {
@@ -431,6 +432,8 @@ export default function Sidebar({
   const wordmarkSrc = isDark
     ? "/logo_horizontal_white.png"
     : "/logo_horizontal_dark.png";
+  const wxztReturnUrl =
+    user?.auth_source === "wxzt" ? getWxztReturnUrl() : null;
 
   const selectMinimalPane = useCallback(
     (pane: MinimalNavPane, opts?: { expand?: boolean }) => {
@@ -491,19 +494,47 @@ export default function Sidebar({
 
   const brandInner = (
     <>
-      <img
-        src={isRailCollapsed ? "/pwa-192.png" : wordmarkSrc}
-        alt="Octop"
-        style={{
-          height: isRailCollapsed ? 32 : isMobile ? 38 : 36,
-          width: isRailCollapsed ? 32 : "auto",
-          maxWidth: isRailCollapsed ? 32 : isMobile ? 190 : 160,
-          objectFit: "contain",
-          display: "block",
-          flexShrink: 0,
-          borderRadius: isRailCollapsed ? 8 : undefined,
-        }}
-      />
+      {wxztReturnUrl ? (
+        <button
+          type="button"
+          onClick={() => navigateToWxzt(wxztReturnUrl)}
+          aria-label="返回 AI 主页"
+          title="返回 AI 主页"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
+            minWidth: isRailCollapsed ? 32 : 0,
+            height: 30,
+            padding: isRailCollapsed ? 0 : "0 6px",
+            border: "1px solid var(--fn-border-primary)",
+            borderRadius: "var(--fn-radius-md)",
+            background: "transparent",
+            color: "var(--fn-text-secondary)",
+            cursor: "pointer",
+            flexShrink: 0,
+            whiteSpace: "nowrap",
+          }}
+        >
+          <ArrowLeft size={15} strokeWidth={1.8} />
+          {!isRailCollapsed && <span>返回 AI 主页</span>}
+        </button>
+      ) : (
+        <img
+          src={isRailCollapsed ? "/pwa-192.png" : wordmarkSrc}
+          alt="Octop"
+          style={{
+            height: isRailCollapsed ? 32 : isMobile ? 38 : 36,
+            width: isRailCollapsed ? 32 : "auto",
+            maxWidth: isRailCollapsed ? 32 : isMobile ? 190 : 160,
+            objectFit: "contain",
+            display: "block",
+            flexShrink: 0,
+            borderRadius: isRailCollapsed ? 8 : undefined,
+          }}
+        />
+      )}
       {!isRailCollapsed && !isMobile && (
         <>
           <CurrentVersionBadge isMobile={isMobile} />

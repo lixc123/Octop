@@ -611,6 +611,7 @@ const ChatDockPanel: React.FC<ChatDockPanelProps> = ({
               sessionId={sessionId}
               environment={browserEnvironment}
               bridgeConnectionId={bridgeConnectionId}
+              isVisible={surfaceVisible}
               hideHeaderRefresh
               style={{ flex: 1, minHeight: 0 }}
               onRefreshReady={handleBrowserRefreshReady}

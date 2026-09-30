@@ -51,7 +51,9 @@ export function ProviderCard({
   const isOnnx = isOnnxProviderRow(provider);
   const isLocalRuntime = isOllama || isOnnx;
 
-  const hasApiKey = !!provider.api_key && provider.api_key.length > 0;
+  const hasApiKey =
+    (provider.api_key_configured ?? false) ||
+    (!!provider.api_key && provider.api_key.length > 0);
   const statusReady = hasApiKey;
   const statusLabel = hasApiKey
     ? t("models.authorized")

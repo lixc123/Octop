@@ -36,6 +36,7 @@ from octop.infra.agents.providers.probe import (
 from octop.infra.agents.providers.reasoning import reasoning_capability
 from octop.infra.agents.providers.resolved import list_resolved_models as _list_resolved_models
 from octop.infra.agents.providers.store import clear_stale_pins_for_provider
+from octop.infra.agents.providers.wxzt_router import WXZT_ROUTER_PROVIDER_NAME
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import resolve_request_locale
 from octop.infra.utils.ulid import new_ulid
@@ -126,12 +127,16 @@ def _row_to_dict(r: Any) -> dict[str, Any]:
             model["reasoning"] = True
             model["reasoning_config"] = capability
         models.append(model)
+    managed = r.name == WXZT_ROUTER_PROVIDER_NAME
     return {
         "id": r.id,
         "name": r.name,
         "kind": r.kind,
         "base_url": r.base_url,
-        "api_key": r.api_key,
+        # The managed wxzt Router credential is a server-side secret. Keep the
+        # configured flag for UI state, but never serialize the token to JSON.
+        "api_key": None if managed else r.api_key,
+        "api_key_configured": bool(r.api_key) if managed else None,
         "models": models,
         "note": r.note,
         "enabled": bool(r.enabled),
@@ -241,6 +246,11 @@ async def admin_patch_provider(
     row = server.services.provider_repo.get(provider_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "provider not found")
+    if row.name == WXZT_ROUTER_PROVIDER_NAME:
+        raise OctopError(
+            ErrorCode.PROVIDER_LOCAL_PROTECTED,
+            "the wxzt AI Router provider is managed by environment settings",
+        )
     import json as _json
 
     models_json = _json.dumps(body.models) if body.models is not None else None
@@ -275,6 +285,11 @@ async def admin_delete_provider(
     row = server.services.provider_repo.get(provider_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "provider not found")
+    if row.name == WXZT_ROUTER_PROVIDER_NAME:
+        raise OctopError(
+            ErrorCode.PROVIDER_LOCAL_PROTECTED,
+            "the wxzt AI Router provider is managed by environment settings",
+        )
     if is_local_runtime_provider(
         row.name,
         provider_api_key=row.api_key,

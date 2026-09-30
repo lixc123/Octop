@@ -90,3 +90,39 @@ async def test_admin_cannot_delete_local_runtime_provider(env):
     r = await c.get("/api/admin/providers", headers=auth)
     ids = [p["id"] for p in r.json()]
     assert pid in ids
+
+
+async def test_managed_wxzt_router_hides_token_and_is_not_mutable(env):
+    c, srv, auth = env
+    assert srv.services is not None
+    existing = srv.services.provider_repo.get_by_name("wxzt-ai-router")
+    pid = (
+        existing.id
+        if existing is not None
+        else srv.services.provider_repo.create(
+            name="wxzt-ai-router",
+            kind="openai",
+            base_url="https://wxzt.example/v1",
+            api_key="router-secret",
+            models_json='[{"id":"geminibalance_main","enabled":true}]',
+        )
+    )
+    srv.services.provider_repo.update(
+        pid,
+        kind="openai",
+        base_url="https://wxzt.example/v1",
+        api_key="router-secret",
+        models_json='[{"id":"geminibalance_main","enabled":true}]',
+        enabled=True,
+    )
+
+    listed = await c.get("/api/providers", headers=auth)
+    assert listed.status_code == 200
+    row = next(item for item in listed.json() if item["id"] == pid)
+    assert row["api_key"] is None
+    assert row["api_key_configured"] is True
+
+    patched = await c.patch(f"/api/admin/providers/{pid}", headers=auth, json={"enabled": False})
+    assert patched.status_code == 409
+    deleted = await c.delete(f"/api/admin/providers/{pid}", headers=auth)
+    assert deleted.status_code == 409

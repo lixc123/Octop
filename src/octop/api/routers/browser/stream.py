@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _FRAME_INTERVAL_S = 0.25  # ~4 fps
+_SESSION_SNAPSHOT_INTERVAL_S = 1.0
 
 
 def _normalize_nav_url(raw: str) -> str:
@@ -145,8 +146,12 @@ async def _stream_loop(
     await send_json({"type": "status", "status": "browser_started"})
     await send_json({"type": "status", "status": "streaming"})
 
+    last_snapshot_at = 0.0
     while is_connected():
-        await _send_session_snapshot(send_json, profile, sess=sess)
+        now = asyncio.get_running_loop().time()
+        if now - last_snapshot_at >= _SESSION_SNAPSHOT_INTERVAL_S:
+            await _send_session_snapshot(send_json, profile, sess=sess)
+            last_snapshot_at = asyncio.get_running_loop().time()
 
         if not listen_only:
             frame = await _capture_jpeg(sess)
@@ -172,7 +177,7 @@ async def _listen_state_loop(
     while is_connected():
         sess = await resolve_harness_session(profile, create=False)
         await _send_session_snapshot(send_json, profile, sess=sess)
-        await asyncio.sleep(_FRAME_INTERVAL_S if sess is not None else 2.0)
+        await asyncio.sleep(_SESSION_SNAPSHOT_INTERVAL_S if sess is not None else 2.0)
 
 
 _CDP_BUTTON_MASK = {"left": 1, "right": 2, "middle": 4, "none": 0}

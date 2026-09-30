@@ -21,7 +21,12 @@ describe("readOidcCompleteParams", () => {
         "#code=from-hash&redirect=%2Fsettings",
         "?code=from-query",
       ),
-    ).toEqual({ code: "from-hash", redirect: "/settings", bind: false });
+    ).toEqual({
+      code: "from-hash",
+      redirect: "/settings",
+      bind: false,
+      embedded: false,
+    });
   });
 
   it("falls back to query for legacy links", () => {
@@ -30,7 +35,14 @@ describe("readOidcCompleteParams", () => {
         code: "legacy",
         redirect: "/chat",
         bind: false,
+        embedded: false,
       },
+    );
+  });
+
+  it("reads embedded mode from the query string", () => {
+    expect(readOidcCompleteParams("", "?code=one&embedded=1").embedded).toBe(
+      true,
     );
   });
 });

@@ -68,6 +68,8 @@ export interface ProviderRow {
   kind: string;
   base_url: string | null;
   api_key: string | null;
+  /** Managed providers keep their key server-side and expose only this flag. */
+  api_key_configured?: boolean;
   models: ProviderModel[];
   note: string | null;
   enabled: boolean;

@@ -3743,6 +3743,8 @@
     "myAccount": "我的账户",
     "settings": "个人设置",
     "appearance": "外观",
+    "returnToWxzt": "返回 AI 主页",
+    "logoutWxzt": "退出 wxzt",
     "palette": "配色",
     "paletteHint": "选择界面品牌配色，与浅色/深色模式独立。",
     "language": "语言",

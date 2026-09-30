@@ -157,6 +157,14 @@ Each variable, when set, takes precedence over the matching key in
 | `OCTOP_CAPTCHA_V3_MIN_SCORE` | float | `0.5` | Minimum `recaptcha-v3` score; admin UI is read-only |
 | `OCTOP_DEFAULT_TIMEZONE` | IANA tz | `Asia/Shanghai` | Default timezone for display, scheduling, and harness (`cron_timezone` / `OCTOP_CRON_TIMEZONE` still accepted) |
 | `OCTOP_CORS_ORIGINS` | comma-sep list | empty | Permitted CORS origins for the dashboard / external callers |
+| `OCTOP_WXZT_AI_ROUTER_ENABLED` | bool | `false` | Create/update the managed wxzt OpenAI-compatible Router provider at startup |
+| `OCTOP_WXZT_ORIGIN` | URL | empty | wxzt origin used for SSO return URL validation and the default Router base URL |
+| `OCTOP_WXZT_SSO_EXCHANGE_URL` | URL | `${OCTOP_WXZT_ORIGIN}/api/octop/sso/exchange` | Server-to-server one-time ticket exchange endpoint |
+| `OCTOP_WXZT_SSO_SHARED_SECRET` | string | empty | Shared secret for wxzt SSO exchange; never sent to the browser |
+| `OCTOP_WXZT_DEFAULT_RETURN_URL` | URL | `${OCTOP_WXZT_ORIGIN}/ai_hub_layout` | Canonical wxzt AI Hub fallback after Octop login |
+| `OCTOP_WXZT_AI_ROUTER_BASE_URL` | URL | `${OCTOP_WXZT_ORIGIN}/v1` | OpenAI-compatible wxzt Router base URL |
+| `OCTOP_WXZT_AI_ROUTER_TOKEN` | string | empty | Server-only wxzt Router token; never returned by `/api/providers` |
+| `OCTOP_WXZT_AI_ROUTER_MODELS` | comma-separated ids | `geminibalance_main,gpt5` | Virtual routing-group model ids exposed by the managed Provider |
 | `OCTOP_ENABLE_DASHBOARD` | bool | `true` | Serve the built React SPA at `/` |
 | `OCTOP_ENABLE_API_DOCS` | bool | `false` | Expose Scalar API docs at `/api/docs` |
 | `OCTOP_REQUIRE_SETUP_PASSWORD` | bool | `true` | Require wizard password during initial setup |

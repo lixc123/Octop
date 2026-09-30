@@ -133,6 +133,7 @@ function ThemedApp() {
           ) : null}
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/login/wxzt" element={<OidcComplete />} />
             <Route path="/login/oidc/complete" element={<OidcComplete />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/invite" element={<InvitePage />} />

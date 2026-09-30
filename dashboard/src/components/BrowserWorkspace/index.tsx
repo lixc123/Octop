@@ -55,6 +55,8 @@ interface BrowserWorkspaceProps {
   onRefreshReady?: (refresh: () => void) => void;
   /** When set, sessions / handoff / screencast go through the peer Bridge. */
   bridgeConnectionId?: string | null;
+  /** Keep the browser stream attached only while this panel is visible. */
+  isVisible?: boolean;
 }
 
 const BrowserWorkspace: React.FC<BrowserWorkspaceProps> = ({
@@ -66,6 +68,7 @@ const BrowserWorkspace: React.FC<BrowserWorkspaceProps> = ({
   hideHeaderRefresh = false,
   onRefreshReady,
   bridgeConnectionId = null,
+  isVisible = true,
 }) => {
   const { t } = useTranslation();
   // Viewport defaults to a fixed 1280×800 — suitable when the view is small
@@ -124,6 +127,11 @@ const BrowserWorkspace: React.FC<BrowserWorkspaceProps> = ({
   // Connect on mount and whenever the attached session or viewport mode
   // changes. The caller controls visibility by mounting/unmounting.
   useEffect(() => {
+    if (!isVisible) {
+      disconnect();
+      return;
+    }
+
     // Use empty string to "attach without navigating" — the backend's
     // BrowserStreamSession will pick whichever tab the agent has open.
     startStream(sessionId ?? "", "");
@@ -131,7 +139,7 @@ const BrowserWorkspace: React.FC<BrowserWorkspaceProps> = ({
       disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, vpMode, bridgeConnectionId]);
+  }, [sessionId, vpMode, bridgeConnectionId, isVisible, disconnect]);
 
   // Keep the URL bar in sync with the active tab — but never stomp while typing.
   useEffect(() => {
