@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -83,13 +84,11 @@ def _isolated_user_home(
     home = tmp_path_factory.mktemp("user-home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    for key in (
-        "OCTOP_CAPTCHA_PROVIDER",
-        "OCTOP_CAPTCHA_SITE_KEY",
-        "OCTOP_CAPTCHA_SECRET",
-        "OCTOP_CAPTCHA_V3_MIN_SCORE",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    # An inherited OCTOP_HOME overrides HOME even for destructive CLI tests.
+    # Database, router, and workspace settings must also stay inside test fixtures.
+    for key in list(os.environ):
+        if key.startswith("OCTOP_"):
+            monkeypatch.delenv(key, raising=False)
     return home
 
 

@@ -103,7 +103,8 @@ async def test_fresh_token_does_not_sliding_renew(client) -> None:
     assert ACCESS_TOKEN_RESPONSE_HEADER not in r.headers
 
 
-async def test_near_expiry_token_gets_sliding_renew(client) -> None:
+@pytest.mark.parametrize("auth_source", ["local", "wxzt"])
+async def test_near_expiry_token_gets_sliding_renew(client, auth_source: str) -> None:
     c, srv, home = client
     await bootstrap_admin(c, home)
     assert srv.user_manager is not None
@@ -119,6 +120,7 @@ async def test_near_expiry_token_gets_sliding_renew(client) -> None:
         uname=user.username,
         role=user.role,
         ttl_seconds=60,
+        auth_source=auth_source,
     )
     r = await c.get("/api/auth/me", headers=bearer(short))
     assert r.status_code == 200
@@ -127,6 +129,10 @@ async def test_near_expiry_token_gets_sliding_renew(client) -> None:
     assert renewed != short
     payload = decode_token(secret, renewed)
     assert int(payload["exp"]) - int(payload["iat"]) == srv.services.config.access_token_ttl_seconds
+    assert payload["auth_source"] == auth_source
+    renewed_me = await c.get("/api/auth/me", headers=bearer(renewed))
+    assert renewed_me.status_code == 200
+    assert renewed_me.json()["auth_source"] == auth_source
 
 
 async def test_maybe_sliding_renew_helper_threshold(client) -> None:

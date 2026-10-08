@@ -100,6 +100,12 @@ export interface OauthStatus {
   providers: OauthProviderStatus[];
 }
 
+/** Public LDAP login availability probe (no auth required). */
+export interface LdapStatus {
+  enabled: boolean;
+  display_name: string;
+}
+
 export interface SetupBody {
   username: string;
   password: string;
@@ -208,6 +214,9 @@ export const authApi = {
   /** Return enabled dashboard SSO providers for the login page. */
   getOauthStatus: () => request<OauthStatus>("/auth/oauth/status"),
 
+  /** Return whether directory (LDAP) logins are available, and its label. */
+  getLdapStatus: () => request<LdapStatus>("/auth/ldap/status"),
+
   /** Start an OIDC authorization-code login flow. */
   startOidc: (redirect_after?: string) =>
     request<{ authorization_url: string }>("/auth/oidc/start", {
@@ -250,13 +259,12 @@ export const authApi = {
     code: string,
     returnUrl?: string,
   ): Promise<LoginResponse & { return_url?: string; logout_url?: string }> => {
-    const raw = await request<RawLoginResponse & { return_url?: string; logout_url?: string }>(
-      "/auth/wxzt/exchange",
-      {
-        method: "POST",
-        body: JSON.stringify({ code, return_url: returnUrl }),
-      },
-    );
+    const raw = await request<
+      RawLoginResponse & { return_url?: string; logout_url?: string }
+    >("/auth/wxzt/exchange", {
+      method: "POST",
+      body: JSON.stringify({ code, return_url: returnUrl }),
+    });
     return { ...raw, token: raw.access_token };
   },
 
