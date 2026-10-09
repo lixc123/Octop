@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, File, Header, Request, Response, UploadFile
+from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.common.client_ip import resolve_client_ip
-from octop.api.common.wxzt_sso import allowed_logout_url, allowed_return_url, redeem_ticket
 from octop.api.deps import current_user, get_server, sign_token
 from octop.infra.auth.captcha import current_env, ensure_captcha, load_effective, public_config
 from octop.infra.errors import ErrorCode, OctopError
@@ -80,65 +78,91 @@ class ChangePasswordBody(BaseModel):
     new_password: str
 
 
+class WxztPrepareBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    wxzt_origin: str = Field(
+        min_length=1,
+        max_length=2048,
+        description="Untrusted initiating window origin; confirmed by wxzt backend at issue.",
+    )
+    mode: Literal["embedded", "standalone"]
+
+
+class WxztPrepareResponse(BaseModel):
+    state: str
+    verifier: str = Field(description="Keep only in the Octop login window; never forward to wxzt.")
+    expires_in: int
+
+
+class WxztIssueBody(WxztPrepareBody):
+    state: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    userid: str = Field(min_length=1, max_length=256)
+    username: str = Field(min_length=1, max_length=256)
+    display_name: str = Field(default="", max_length=256)
+    role: str = Field(min_length=1, max_length=128)
+    email: str | None = Field(default=None, max_length=320)
+
+
+class WxztIssueResponse(BaseModel):
+    state: str
+    code: str
+    expires_in: int
+
+
 class WxztExchangeBody(BaseModel):
-    code: str = Field(min_length=20, max_length=256)
-    return_url: str | None = Field(default=None, max_length=2048)
+    model_config = ConfigDict(extra="forbid")
+    state: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    code: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    verifier: str = Field(min_length=43, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
 
-def _wxzt_identity_payload(payload: dict[str, object]) -> tuple[str, dict[str, object]]:
-    userid = str(payload.get("userid") or "").strip()
-    username = str(payload.get("username") or "").strip()
-    if not userid or not username:
-        raise ValueError("wxzt identity is incomplete")
-    claims: dict[str, object] = {
-        "preferred_username": f"wxzt_{userid}",
-        "name": str(payload.get("display_name") or username).strip() or username,
-    }
-    email = payload.get("email")
-    if isinstance(email, str) and email.strip():
-        claims["email"] = email.strip()
-    return userid, claims
+class WxztExchangeResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
+    return_url: str
+    logout_url: str
+    user: dict[str, Any]
 
 
-@router.post("/wxzt/exchange", summary="Exchange a wxzt SSO ticket")
-async def wxzt_exchange(
-    body: WxztExchangeBody, server: Any = Depends(get_server)
+@router.post(
+    "/wxzt/prepare", summary="Prepare a window-bound wxzt login", response_model=WxztPrepareResponse
+)
+def wxzt_prepare(
+    body: WxztPrepareBody, request: Request, response: Response, server: Any = Depends(get_server)
+) -> Any:
+    response.headers["Cache-Control"] = "no-store"
+    return server.sso_service.prepare_wxzt(body.wxzt_origin, body.mode, _client_ip(request))
+
+
+@router.post(
+    "/wxzt/issue",
+    summary="Issue a wxzt login code",
+    response_model=WxztIssueResponse,
+    description="wxzt backend only. Requires X-Octop-SSO-Secret and trusted local session identity. Never returns JWT.",
+)
+async def wxzt_issue(
+    body: WxztIssueBody,
+    response: Response,
+    server: Any = Depends(get_server),
+    x_octop_sso_secret: str = Header(
+        default="", description="Shared secret held only by wxzt backend."
+    ),
+) -> Any:
+    response.headers["Cache-Control"] = "no-store"
+    return await server.sso_service.issue_wxzt(body.model_dump(), x_octop_sso_secret)
+
+
+@router.post(
+    "/wxzt/exchange",
+    summary="Exchange a window-bound wxzt code",
+    response_model=WxztExchangeResponse,
+)
+def wxzt_exchange(
+    body: WxztExchangeBody, response: Response, server: Any = Depends(get_server)
 ) -> dict[str, Any]:
-    """Redeem a wxzt one-time ticket and issue a normal Octop JWT."""
-    try:
-        identity = await redeem_ticket(body.code)
-        subject, claims = _wxzt_identity_payload(identity)
-        provider = server.services.sso_repo.get_by_kind("wxzt")
-        if provider is None:
-            provider = server.services.sso_repo.upsert_by_kind(
-                "wxzt",
-                enabled=True,
-                display_name="wxzt",
-                issuer="",
-                client_id="wxzt",
-                client_secret_enc=None,
-                scopes="openid profile",
-                dashboard_origin=allowed_return_url(None),
-                extra={"managed": True},
-            )
-        user = await server.user_manager.resolve_or_create_sso_user(
-            provider_id=provider.id,
-            subject=subject,
-            claims=claims,
-        )
-    except (ValueError, TypeError) as exc:
-        raise OctopError(ErrorCode.AUTH_FAILED, "invalid or expired wxzt SSO ticket") from exc
-
-    # wxzt is the identity authority. Only a signed, server-to-server role claim
-    # can promote an already trusted local account; the browser cannot request it.
-    trusted_admin_roles = {
-        item.strip()
-        for item in os.environ.get("OCTOP_WXZT_ADMIN_ROLES", "admin").split(",")
-        if item.strip()
-    }
-    if str(identity.get("role") or "") in trusted_admin_roles and not user.is_admin:
-        server.services.user_repo.set_role(user.id, "admin")
-        user.role = "admin"
+    response.headers["Cache-Control"] = "no-store"
+    user, origin = server.sso_service.exchange_wxzt(body.state, body.code, body.verifier)
     secret = server.services.secret_repo.get("jwt")
     ttl = server.services.config.access_token_ttl_seconds
     token = sign_token(
@@ -153,8 +177,8 @@ async def wxzt_exchange(
         "access_token": token,
         "token_type": "Bearer",
         "expires_in": ttl,
-        "return_url": allowed_return_url(body.return_url),
-        "logout_url": allowed_logout_url(str(identity.get("logout_url") or "")),
+        "return_url": f"{origin}/ai_hub_layout",
+        "logout_url": f"{origin}/logout",
         "user": {**_user_json(user, locale=user.locale), "auth_source": "wxzt"},
     }
 

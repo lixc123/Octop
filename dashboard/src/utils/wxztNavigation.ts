@@ -1,18 +1,32 @@
-const RETURN_URL_KEY = "octop:wxzt:return-url";
-const LOGOUT_URL_KEY = "octop:wxzt:logout-url";
+const CONTEXT_KEY = "octop:wxzt:navigation";
 
 export const OCTOP_EMBED_GO_HOME = "OCTOP_EMBED_GO_HOME";
 export const OCTOP_EMBED_LOGOUT = "OCTOP_EMBED_LOGOUT";
 export const OCTOP_EMBED_READY = "OCTOP_EMBED_READY";
 export const OCTOP_EMBED_ERROR = "OCTOP_EMBED_ERROR";
 
-function allowedWxztUrl(value: string | null, path: string): string | null {
-  if (!value) return null;
+interface NavigationContext {
+  returnUrl: string;
+  logoutUrl: string;
+  requestId: string;
+  state: string;
+  mode: "embedded" | "standalone";
+}
+
+function canonicalUrl(value: string | undefined, path: string): URL | null {
   try {
-    const parsed = new URL(value, window.location.origin);
-    if (!/^https?:$/.test(parsed.protocol)) return null;
-    if (parsed.pathname !== path || parsed.search || parsed.hash) return null;
-    return parsed.toString();
+    if (!value || value.includes("\\")) return null;
+    const parsed = new URL(value);
+    if (
+      !/^https?:$/.test(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== path ||
+      parsed.search ||
+      parsed.hash
+    )
+      return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -21,79 +35,84 @@ function allowedWxztUrl(value: string | null, path: string): string | null {
 export function rememberWxztNavigation(
   returnUrl?: string,
   logoutUrl?: string,
+  context?: {
+    requestId: string;
+    state: string;
+    mode: "embedded" | "standalone";
+  },
 ): void {
-  const safeReturn = allowedWxztUrl(returnUrl ?? null, "/ai_hub_layout");
-  const safeLogout = allowedWxztUrl(logoutUrl ?? null, "/logout");
-  if (safeReturn) sessionStorage.setItem(RETURN_URL_KEY, safeReturn);
-  if (safeLogout) sessionStorage.setItem(LOGOUT_URL_KEY, safeLogout);
-}
-
-export function getWxztReturnUrl(): string | null {
-  return allowedWxztUrl(
-    sessionStorage.getItem(RETURN_URL_KEY),
-    "/ai_hub_layout",
-  );
-}
-
-export function getWxztLogoutUrl(): string | null {
-  return allowedWxztUrl(sessionStorage.getItem(LOGOUT_URL_KEY), "/logout");
-}
-
-function postToWxztParent(
-  type: string,
-  targetUrl: string | null,
-  data: Record<string, unknown> = {},
-): boolean {
-  if (window.parent === window) return false;
-  try {
-    // The configured return URL can be a loopback address while a browser
-    // opens wxzt through its LAN/reverse-proxy origin. In an iframe, the
-    // browser-provided referrer is the actual embedding parent, so prefer it
-    // for delivery. wxzt still validates event.source and event.origin.
-    const referrerOrigin = document.referrer
-      ? new URL(document.referrer).origin
-      : null;
-    const ancestorOrigin = window.location.ancestorOrigins?.[0] || null;
-    const configuredOrigin = targetUrl ? new URL(targetUrl).origin : null;
-    const targetOrigin = referrerOrigin || ancestorOrigin || configuredOrigin;
-    if (!targetOrigin) return false;
-    window.parent.postMessage({ type, ...data }, targetOrigin);
-    return true;
-  } catch {
-    return false;
+  clearWxztNavigation();
+  const home = canonicalUrl(returnUrl, "/ai_hub_layout");
+  const logout = canonicalUrl(logoutUrl, "/logout");
+  if (home && logout && home.origin === logout.origin && context) {
+    sessionStorage.setItem(
+      CONTEXT_KEY,
+      JSON.stringify({
+        returnUrl: home.href,
+        logoutUrl: logout.href,
+        ...context,
+      }),
+    );
   }
 }
 
-export function notifyWxztEmbed(
-  type:
-    | typeof OCTOP_EMBED_GO_HOME
-    | typeof OCTOP_EMBED_LOGOUT
-    | "OCTOP_EMBED_READY"
-    | "OCTOP_EMBED_ERROR",
-  data: Record<string, unknown> = {},
-): boolean {
-  const targetUrl =
-    type === OCTOP_EMBED_LOGOUT ? getWxztLogoutUrl() : getWxztReturnUrl();
-  return postToWxztParent(type, targetUrl, data);
+function navigation(): NavigationContext | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(CONTEXT_KEY) || "null");
+    const home = canonicalUrl(value?.returnUrl, "/ai_hub_layout");
+    const logout = canonicalUrl(value?.logoutUrl, "/logout");
+    if (
+      !home ||
+      !logout ||
+      home.origin !== logout.origin ||
+      !value.requestId ||
+      !value.state ||
+      !["embedded", "standalone"].includes(value.mode)
+    )
+      return null;
+    return value as NavigationContext;
+  } catch {
+    return null;
+  }
 }
 
-/** Navigate to wxzt, or ask the embedding wxzt page to handle top-level navigation. */
+export function getWxztReturnUrl(): string | null {
+  return navigation()?.returnUrl || null;
+}
+export function getWxztLogoutUrl(): string | null {
+  return navigation()?.logoutUrl || null;
+}
+
+export function notifyWxztEmbed(
+  type: string,
+  data: Record<string, unknown> = {},
+): boolean {
+  const context = navigation();
+  if (!context || context.mode !== "embedded" || window.parent === window)
+    return false;
+  window.parent.postMessage(
+    { ...data, type, request_id: context.requestId, state: context.state },
+    new URL(context.returnUrl).origin,
+  );
+  return true;
+}
+
 export function navigateToWxzt(
   url: string | null,
-  messageType:
-    | typeof OCTOP_EMBED_GO_HOME
-    | typeof OCTOP_EMBED_LOGOUT = OCTOP_EMBED_GO_HOME,
+  messageType: string = OCTOP_EMBED_GO_HOME,
 ): boolean {
-  const targetUrl =
+  if (notifyWxztEmbed(messageType)) return true;
+  const context = navigation();
+  const trusted =
     messageType === OCTOP_EMBED_LOGOUT
-      ? getWxztLogoutUrl()
-      : getWxztReturnUrl();
-  if (postToWxztParent(messageType, targetUrl)) return true;
-  if (url) window.location.assign(url);
+      ? context?.logoutUrl
+      : context?.returnUrl;
+  if (trusted && trusted === url) window.location.assign(trusted);
   return false;
 }
 
 export function clearWxztNavigation(): void {
-  sessionStorage.removeItem(RETURN_URL_KEY);
-  sessionStorage.removeItem(LOGOUT_URL_KEY);
+  sessionStorage.removeItem(CONTEXT_KEY);
+  sessionStorage.removeItem("octop:wxzt:return-url");
+  sessionStorage.removeItem("octop:wxzt:logout-url");
 }

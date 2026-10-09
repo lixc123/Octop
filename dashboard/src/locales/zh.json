@@ -162,6 +162,8 @@
     "PUBLISHED_EXPERT_SLUG_TAKEN": "已存在发布专家 slug：{{slug}}。",
     "PUBLISHED_EXPERT_ALREADY_EXISTS": "该专家已发布为「{{name}}」，请改为刷新已发布模板。",
     "OIDC_BAD_REQUEST": "OIDC 请求无效：{{detail}}",
+    "WXZT_SSO_INVALID": "wxzt 登录无效或已过期，请重新进入。",
+    "WXZT_SSO_UNAVAILABLE": "wxzt 免登暂不可用。",
     "SSO_IDENTITY_TAKEN": "该登录身份已绑定到其他 Octop 账号。",
     "SSO_UNBIND_REQUIRES_PASSWORD": "请先设置密码再解绑单点登录。",
     "LDAP_BAD_REQUEST": "LDAP 配置无效：{{detail}}",

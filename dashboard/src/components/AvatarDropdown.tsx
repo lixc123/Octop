@@ -140,6 +140,7 @@ export default function AvatarDropdown({
     await applyGuestLocale();
     if (wxztLogoutUrl) {
       navigateToWxzt(wxztLogoutUrl, OCTOP_EMBED_LOGOUT);
+      clearWxztNavigation();
       return;
     }
     clearWxztNavigation();

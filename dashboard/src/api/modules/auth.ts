@@ -254,16 +254,26 @@ export const authApi = {
     return { ...raw, token: raw.access_token };
   },
 
-  /** Exchange a wxzt one-time ticket issued by the wxzt backend. */
+  prepareWxzt: (wxzt_origin: string, mode: "embedded" | "standalone") =>
+    request<{ state: string; verifier: string; expires_in: number }>(
+      "/auth/wxzt/prepare",
+      {
+        method: "POST",
+        body: JSON.stringify({ wxzt_origin, mode }),
+      },
+    ),
+
+  /** Exchange a code bound to this Octop window's in-memory verifier. */
   exchangeWxztCode: async (
+    state: string,
     code: string,
-    returnUrl?: string,
+    verifier: string,
   ): Promise<LoginResponse & { return_url?: string; logout_url?: string }> => {
     const raw = await request<
       RawLoginResponse & { return_url?: string; logout_url?: string }
     >("/auth/wxzt/exchange", {
       method: "POST",
-      body: JSON.stringify({ code, return_url: returnUrl }),
+      body: JSON.stringify({ state, code, verifier }),
     });
     return { ...raw, token: raw.access_token };
   },

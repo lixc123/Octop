@@ -50,6 +50,7 @@ class SsoProviderRow:
     scopes: str
     dashboard_origin: str | None
     created_at: int
+
     updated_at: int
     kind: str = "oidc"
     extra: dict[str, Any] = field(default_factory=dict)
@@ -86,6 +87,9 @@ class SsoLoginStateRow:
     expires_at: int
     consumed_at: int | None
     created_at: int
+    wxzt_origin: str | None = None
+    wxzt_mode: str | None = None
+    wxzt_browser_challenge: str | None = None
 
     @classmethod
     def from_row(cls, row: DbRow) -> SsoLoginStateRow:
@@ -100,6 +104,9 @@ class SsoLoginStateRow:
             expires_at=int(row["expires_at"]),
             consumed_at=int(row["consumed_at"]) if row["consumed_at"] is not None else None,
             created_at=int(row["created_at"]),
+            wxzt_origin=row["wxzt_origin"],
+            wxzt_mode=row["wxzt_mode"],
+            wxzt_browser_challenge=row["wxzt_browser_challenge"],
         )
 
 
@@ -110,6 +117,17 @@ class SsoRepo:
     def get_provider(self) -> SsoProviderRow | None:
         """Return the OIDC provider row (legacy single-provider helper)."""
         return self.get_by_kind("oidc")
+
+    def ensure_wxzt_provider(self) -> None:
+        """Initialize once, including across workers; preserve explicit disablement."""
+        ts = now_ts()
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sso_providers(enabled, display_name, issuer, client_id, scopes, "
+                "kind, extra, created_at, updated_at) VALUES (1, 'wxzt', '', 'wxzt', "
+                "'openid profile', 'wxzt', ?, ?, ?) ON CONFLICT(kind) DO NOTHING",
+                (_extra_json({"managed": True}), ts, ts),
+            )
 
     def get_by_id(self, provider_id: int) -> SsoProviderRow | None:
         with self._db.connect() as conn:
@@ -312,7 +330,8 @@ class SsoRepo:
             row = conn.execute(
                 "UPDATE sso_login_states SET consumed_at = ? "
                 "WHERE state = ? AND consumed_at IS NULL AND expires_at > ? "
-                "AND login_code IS NULL RETURNING *",
+                "AND login_code IS NULL AND wxzt_browser_challenge IS NULL "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind != 'wxzt') RETURNING *",
                 (now_ts(), state, now_ts()),
             ).fetchone()
         return SsoLoginStateRow.from_row(row) if row else None
@@ -325,7 +344,9 @@ class SsoRepo:
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE sso_login_states SET login_code = ?, user_id = ?, expires_at = ?, "
-                "consumed_at = NULL WHERE state = ? AND login_code IS NULL",
+                "consumed_at = NULL WHERE state = ? AND login_code IS NULL "
+                "AND wxzt_browser_challenge IS NULL "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind != 'wxzt')",
                 (login_code, user_id, expires_at, state),
             )
 
@@ -334,10 +355,93 @@ class SsoRepo:
             row = conn.execute(
                 "UPDATE sso_login_states SET consumed_at = ? "
                 "WHERE login_code = ? AND consumed_at IS NULL AND expires_at > ? "
-                "AND user_id IS NOT NULL RETURNING user_id",
+                "AND user_id IS NOT NULL AND wxzt_browser_challenge IS NULL "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind != 'wxzt') "
+                "RETURNING user_id",
                 (now_ts(), login_code, now_ts()),
             ).fetchone()
         return {"user_id": int(row["user_id"])} if row else None
+
+    def prepare_wxzt(
+        self,
+        *,
+        state: str,
+        provider_id: int,
+        origin: str,
+        mode: str,
+        challenge: str,
+        expires_at: int,
+    ) -> None:
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sso_login_states(state, provider_id, nonce, code_verifier, "
+                "redirect_after, expires_at, created_at, wxzt_origin, wxzt_mode, "
+                "wxzt_browser_challenge) VALUES (?, ?, '', '', '/chat', ?, ?, ?, ?, ?)",
+                (state, provider_id, expires_at, now_ts(), origin, mode, challenge),
+            )
+
+    def claim_wxzt(
+        self, state: str, provider_id: int, origin: str, mode: str
+    ) -> SsoLoginStateRow | None:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "UPDATE sso_login_states SET consumed_at = ? WHERE state = ? "
+                "AND provider_id = ? AND wxzt_origin = ? AND wxzt_mode = ? "
+                "AND wxzt_browser_challenge IS NOT NULL AND consumed_at IS NULL "
+                "AND login_code IS NULL AND expires_at > ? "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind = 'wxzt' AND enabled = 1) "
+                "RETURNING *",
+                (now_ts(), state, provider_id, origin, mode, now_ts()),
+            ).fetchone()
+        return SsoLoginStateRow.from_row(row) if row else None
+
+    def get_wxzt_state(self, state: str, provider_id: int) -> SsoLoginStateRow | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM sso_login_states WHERE state = ? AND provider_id = ? "
+                "AND wxzt_browser_challenge IS NOT NULL "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind = 'wxzt')",
+                (state, provider_id),
+            ).fetchone()
+        return SsoLoginStateRow.from_row(row) if row else None
+
+    def issue_wxzt(
+        self, claimed: SsoLoginStateRow, code_hash: str, user_id: int, expires_at: int
+    ) -> bool:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "UPDATE sso_login_states SET login_code = ?, user_id = ?, expires_at = ?, "
+                "consumed_at = NULL WHERE state = ? AND provider_id = ? AND consumed_at = ? "
+                "AND wxzt_browser_challenge IS NOT NULL AND login_code IS NULL AND expires_at > ? "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind = 'wxzt' AND enabled = 1) "
+                "AND EXISTS (SELECT 1 FROM users WHERE id = ? AND disabled = 0) RETURNING state",
+                (
+                    code_hash,
+                    user_id,
+                    expires_at,
+                    claimed.state,
+                    claimed.provider_id,
+                    claimed.consumed_at,
+                    now_ts(),
+                    user_id,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def consume_wxzt(
+        self, state: str, code_hash: str, challenge: str, provider_id: int
+    ) -> SsoLoginStateRow | None:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "UPDATE sso_login_states SET consumed_at = ? WHERE state = ? AND login_code = ? "
+                "AND wxzt_browser_challenge = ? AND provider_id = ? AND consumed_at IS NULL "
+                "AND wxzt_origin IS NOT NULL AND wxzt_mode IN ('embedded', 'standalone') "
+                "AND expires_at > ? AND user_id IN (SELECT id FROM users WHERE disabled = 0) "
+                "AND provider_id IN (SELECT id FROM sso_providers WHERE kind = 'wxzt' AND enabled = 1) "
+                "RETURNING *",
+                (now_ts(), state, code_hash, challenge, provider_id, now_ts()),
+            ).fetchone()
+        return SsoLoginStateRow.from_row(row) if row else None
 
     def delete_expired(self, now: int | None = None) -> None:
         ts = now if now is not None else now_ts()

@@ -1898,6 +1898,21 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 21:
+        state_exists = _table_exists(db, "sso_login_states")
+        provider_exists = _table_exists(db, "sso_providers")
+        columns = _table_columns(db, "sso_login_states") if state_exists else set()
+        with db.transaction() as conn:
+            if state_exists:
+                for name in ("wxzt_origin", "wxzt_mode", "wxzt_browser_challenge"):
+                    if name not in columns:
+                        conn.execute(
+                            f"ALTER TABLE sso_login_states ADD COLUMN {name} TEXT DEFAULT NULL"
+                        )
+            if provider_exists:
+                conn.execute("UPDATE sso_providers SET dashboard_origin = NULL WHERE kind = 'wxzt'")
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     if version == 20:
         _ensure_skill_copy_policy_schema(db)
         with db.connect() as conn:

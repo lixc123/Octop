@@ -380,6 +380,7 @@ class OctopServer:
         await self._boot_runtime(config)
         self._started = True
         assert self.user_manager is not None
+        self.sso_service.initialize_wxzt()
         self._emit_wizard_password(user_count=self.user_manager.count())
 
     async def bind_control_plane(self) -> None:
@@ -410,6 +411,7 @@ class OctopServer:
 
         sync_wxzt_router_provider(self.services)
         await self._boot_runtime(config)
+        self.sso_service.initialize_wxzt()
         logger.info(
             "control-plane database bound driver=%s",
             config.database.driver,

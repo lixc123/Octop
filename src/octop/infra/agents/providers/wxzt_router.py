@@ -42,10 +42,7 @@ def sync_wxzt_router_provider(services: Any) -> None:
     other providers.
     """
     enabled = _env_bool("OCTOP_WXZT_AI_ROUTER_ENABLED", False)
-    origin = (os.environ.get("OCTOP_WXZT_ORIGIN") or "").strip().rstrip("/")
     base_url = (os.environ.get("OCTOP_WXZT_AI_ROUTER_BASE_URL") or "").strip()
-    if not base_url and origin:
-        base_url = f"{origin}/v1"
     token = (os.environ.get("OCTOP_WXZT_AI_ROUTER_TOKEN") or "").strip()
     if enabled and (not base_url or not token):
         logger.warning("wxzt AI Router enabled but base URL or token is missing; provider disabled")

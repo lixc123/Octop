@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from psycopg import Error as PostgreSqlError
 from scalar_fastapi import get_scalar_api_reference
 
 from octop.api.middleware.jwt_auth import install as install_jwt_auth
@@ -75,6 +79,19 @@ def _mount_routers(app: FastAPI, mounts: Sequence[_RouterMount]) -> None:
 
 
 def _install_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def _validation(request: Request, exc: RequestValidationError) -> Any:
+        if request.url.path in {
+            "/api/auth/wxzt/prepare",
+            "/api/auth/wxzt/issue",
+            "/api/auth/wxzt/exchange",
+        }:
+            err = OctopError.localized(
+                ErrorCode.WXZT_SSO_INVALID, resolve_request_locale(request), status=400
+            )
+            return JSONResponse(status_code=400, content=err.to_envelope())
+        return await request_validation_exception_handler(request, exc)
+
     @app.exception_handler(OctopError)
     async def _octop(request: Request, exc: OctopError) -> JSONResponse:
         # Client responses are locale-localized; log the original English message
@@ -92,6 +109,16 @@ def _install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        if request.url.path in {
+            "/api/auth/wxzt/prepare",
+            "/api/auth/wxzt/issue",
+            "/api/auth/wxzt/exchange",
+        } and isinstance(exc, (sqlite3.Error, PostgreSqlError)):
+            logger.error("wxzt SSO database operation unavailable")
+            err = OctopError.localized(
+                ErrorCode.WXZT_SSO_UNAVAILABLE, resolve_request_locale(request)
+            )
+            return JSONResponse(status_code=503, content=err.to_envelope())
         logger.exception("unhandled exception in %s", request.url.path)
         locale = resolve_request_locale(request)
         err = OctopError.localized(ErrorCode.INTERNAL_ERROR, locale)

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import json
 import logging
+import os
 import secrets
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,6 +19,7 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 
+from octop.infra.auth.ldap.throttle import LdapBindThrottle
 from octop.infra.auth.sso.crypto import decrypt_secret, encrypt_secret
 from octop.infra.auth.sso.discovery import DiscoveryCache
 from octop.infra.auth.sso.id_token import verify_id_token
@@ -23,6 +28,7 @@ from octop.infra.auth.sso.providers import build_adapters
 from octop.infra.auth.sso.providers.base import SSO_KINDS, IdentityProvider
 from octop.infra.auth.sso.public_base import build_redirect_uri, parse_strict_origin
 from octop.infra.auth.sso.redirect_after import sanitize_redirect_after
+from octop.infra.auth.sso.wxzt import credential_hash, strict_wxzt_origin
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.sso import SsoProviderRow
 from octop.infra.db.services import SharedServices
@@ -52,6 +58,175 @@ class SsoService:
         self._user_manager = user_manager
         self._discovery = DiscoveryCache()
         self._adapters: dict[str, IdentityProvider] = build_adapters(self)
+        self._wxzt_prepare_throttle = LdapBindThrottle(
+            max_attempts=30, window_seconds=60, block_seconds=60
+        )
+        self._wxzt_prepare_global = LdapBindThrottle(
+            max_attempts=180, window_seconds=60, block_seconds=60
+        )
+        self._wxzt_prepare_lock = threading.Lock()
+
+    def initialize_wxzt(self) -> None:
+        if os.environ.get("OCTOP_WXZT_SSO_SHARED_SECRET", "").strip():
+            self._services.sso_repo.ensure_wxzt_provider()
+
+    def _wxzt_provider(self) -> SsoProviderRow:
+        if not os.environ.get("OCTOP_WXZT_SSO_SHARED_SECRET", "").strip():
+            raise OctopError(ErrorCode.WXZT_SSO_UNAVAILABLE, "wxzt SSO is not configured")
+        provider = self._services.sso_repo.get_by_kind("wxzt")
+        if provider is None:
+            raise OctopError(ErrorCode.WXZT_SSO_UNAVAILABLE, "wxzt SSO is not initialized")
+        if not provider.enabled:
+            raise OctopError(ErrorCode.FORBIDDEN, "wxzt SSO is disabled")
+        return provider
+
+    def prepare_wxzt(self, origin: str, mode: str, client_ip: str) -> dict[str, Any]:
+        provider = self._wxzt_provider()
+        try:
+            origin = strict_wxzt_origin(origin)
+        except ValueError as exc:
+            raise OctopError(ErrorCode.WXZT_SSO_INVALID, "invalid wxzt origin", status=400) from exc
+        if mode not in {"embedded", "standalone"}:
+            raise OctopError(ErrorCode.WXZT_SSO_INVALID, "invalid wxzt mode", status=400)
+        with self._wxzt_prepare_lock:
+            if self._wxzt_prepare_throttle.retry_after(
+                "prepare", client_ip
+            ) or self._wxzt_prepare_global.retry_after("prepare", "global"):
+                raise OctopError(ErrorCode.LOGIN_LOCKED, "too many login preparations")
+            self._wxzt_prepare_throttle.record_failure("prepare", client_ip)
+            self._wxzt_prepare_global.record_failure("prepare", "global")
+        self._services.sso_repo.delete_expired()
+        verifier, challenge = new_pkce_pair()
+        state = secrets.token_urlsafe(32)
+        self._services.sso_repo.prepare_wxzt(
+            state=state,
+            provider_id=provider.id,
+            origin=origin,
+            mode=mode,
+            challenge=challenge,
+            expires_at=int(time.time()) + 120,
+        )
+        self._services.audit_repo.write(
+            actor="anonymous",
+            action="auth.wxzt_prepare",
+            target="wxzt",
+            payload=json.dumps({"origin": origin, "mode": mode}),
+        )
+        return {"state": state, "verifier": verifier, "expires_in": 120}
+
+    async def issue_wxzt(self, body: Mapping[str, Any], provided_secret: str) -> dict[str, Any]:
+        expected = os.environ.get("OCTOP_WXZT_SSO_SHARED_SECRET", "").strip()
+        if not expected:
+            raise OctopError(ErrorCode.WXZT_SSO_UNAVAILABLE, "wxzt SSO is not configured")
+        if not hmac.compare_digest(provided_secret.encode(), expected.encode()):
+            await asyncio.to_thread(
+                self._services.audit_repo.write,
+                actor="anonymous",
+                action="auth.wxzt_issue_denied",
+                target="wxzt",
+            )
+            raise OctopError(ErrorCode.FORBIDDEN, "invalid wxzt SSO secret")
+        provider = await asyncio.to_thread(self._wxzt_provider)
+        try:
+            origin = strict_wxzt_origin(body["wxzt_origin"])
+        except ValueError as exc:
+            raise OctopError(ErrorCode.WXZT_SSO_INVALID, "invalid wxzt origin", status=400) from exc
+        subject = body["userid"].strip()
+        username = body["username"].strip()
+        if not subject or not username or body["mode"] not in {"embedded", "standalone"}:
+            raise OctopError(ErrorCode.WXZT_SSO_INVALID, "incomplete wxzt identity", status=400)
+        claimed = await asyncio.to_thread(
+            self._services.sso_repo.claim_wxzt, body["state"], provider.id, origin, body["mode"]
+        )
+        if claimed is None:
+            previous = await asyncio.to_thread(
+                self._services.sso_repo.get_wxzt_state, body["state"], provider.id
+            )
+            raise OctopError(
+                ErrorCode.WXZT_SSO_INVALID,
+                "invalid or already claimed state",
+                status=401 if previous is None or previous.expires_at <= int(time.time()) else 409,
+            )
+        claims = {
+            "preferred_username": f"wxzt_{subject}",
+            "name": body.get("display_name") or username,
+        }
+        if body.get("email"):
+            claims["email"] = body["email"]
+        user = await self._user_manager.resolve_or_create_sso_user(
+            provider_id=provider.id,
+            subject=subject,
+            claims=claims,
+        )
+        await asyncio.to_thread(self._wxzt_provider)
+        trusted_roles = {
+            r.strip()
+            for r in os.environ.get("OCTOP_WXZT_ADMIN_ROLES", "admin").split(",")
+            if r.strip()
+        }
+        if body["role"] in trusted_roles and not user.is_admin:
+            await asyncio.to_thread(self._services.user_repo.set_role, user.id, "admin")
+            user.role = "admin"
+        code = secrets.token_urlsafe(32)
+        if not await asyncio.to_thread(
+            self._services.sso_repo.issue_wxzt,
+            claimed,
+            credential_hash(code),
+            user.id,
+            int(time.time()) + 60,
+        ):
+            raise OctopError(ErrorCode.WXZT_SSO_INVALID, "login issuance failed", status=409)
+        await asyncio.to_thread(
+            self._services.audit_repo.write,
+            actor=user.username,
+            action="auth.wxzt_issue",
+            target=user.username,
+            payload=json.dumps({"origin": origin, "mode": body["mode"]}),
+        )
+        return {"state": claimed.state, "code": code, "expires_in": 60}
+
+    def exchange_wxzt(self, state: str, code: str, verifier: str) -> tuple[User, str]:
+        provider = self._wxzt_provider()
+        previous = self._services.sso_repo.get_wxzt_state(state, provider.id)
+        if (
+            previous is not None
+            and previous.user_id is not None
+            and previous.expires_at > int(time.time())
+            and previous.consumed_at is None
+            and hmac.compare_digest(previous.login_code or "", credential_hash(code))
+            and hmac.compare_digest(
+                previous.wxzt_browser_challenge or "", credential_hash(verifier)
+            )
+        ):
+            row = self._services.user_repo.get(previous.user_id)
+            if row is not None and row.disabled:
+                raise OctopError(ErrorCode.USER_DISABLED, "user is disabled")
+        consumed = self._services.sso_repo.consume_wxzt(
+            state,
+            credential_hash(code),
+            credential_hash(verifier),
+            provider.id,
+        )
+        if consumed is None or consumed.user_id is None or consumed.wxzt_origin is None:
+            raise OctopError(ErrorCode.WXZT_SSO_INVALID, "invalid or expired login code")
+        row = self._services.user_repo.get(consumed.user_id)
+        if row is None or row.disabled:
+            raise OctopError(ErrorCode.USER_DISABLED, "user is disabled")
+        user = User(
+            id=row.id,
+            username=row.username,
+            role=str(row.role),
+            display_name=row.display_name,
+            locale=row.locale,
+            permissions=list(row.permissions),
+        )
+        self._services.audit_repo.write(
+            actor=user.username,
+            action="auth.wxzt_login",
+            target=user.username,
+            payload=json.dumps({"origin": consumed.wxzt_origin, "mode": consumed.wxzt_mode}),
+        )
+        return user, consumed.wxzt_origin
 
     def status(self) -> dict[str, bool | str]:
         provider = self._services.sso_repo.get_provider()
